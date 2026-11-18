@@ -1,0 +1,381 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXContainerItemProxy section */
+		653CD613AD40BAEEFD586FC0 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 45460FB37C56BF472543139B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 7C671D831127B405A1ED50F0;
+			remoteInfo = StickmanWar;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		F2306EAAE1B4F1EB773FF039 /* StickmanWar.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StickmanWar.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A4E42111FB6E71CD1B9610B5 /* StickmanWarTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = StickmanWarTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		8B70EC994A7ACBCBBE728B47 /* Exceptions for "StickmanWar" folder in "StickmanWar" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				StickmanWar.entitlements,
+			);
+			target = 7C671D831127B405A1ED50F0 /* StickmanWar */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		0A946CFF6FD24C233E00F552 /* StickmanWar */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				8B70EC994A7ACBCBBE728B47 /* Exceptions for "StickmanWar" folder in "StickmanWar" target */,
+			);
+			path = StickmanWar;
+			sourceTree = "<group>";
+		};
+		69DACC6976D0BFA2744AC62D /* StickmanWarTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = StickmanWarTests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		8A18324C651F4B7326B8ED60 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C86AA075E6E2CF06D7F0377A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		1FF9DC6AFC7EA49D6988C85C = {
+			isa = PBXGroup;
+			children = (
+				0A946CFF6FD24C233E00F552 /* StickmanWar */,
+				69DACC6976D0BFA2744AC62D /* StickmanWarTests */,
+				307CE8790487179491AD6F89 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		307CE8790487179491AD6F89 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				F2306EAAE1B4F1EB773FF039 /* StickmanWar.app */,
+				A4E42111FB6E71CD1B9610B5 /* StickmanWarTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		7C671D831127B405A1ED50F0 /* StickmanWar */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1562537D9BA4497F5E8ECD38 /* Build configuration list for PBXNativeTarget "StickmanWar" */;
+			buildPhases = (
+				1F32F89F439E775D27540C8A /* Sources */,
+				8A18324C651F4B7326B8ED60 /* Frameworks */,
+				4365BD8BA425F6DF3D4A9556 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				0A946CFF6FD24C233E00F552 /* StickmanWar */,
+			);
+			name = StickmanWar;
+			productName = StickmanWar;
+			productReference = F2306EAAE1B4F1EB773FF039 /* StickmanWar.app */;
+			productType = "com.apple.product-type.application";
+		};
+		6588CEE971C3B18DB3B5C7A9 /* StickmanWarTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 359166153E354DF4FD82BEB6 /* Build configuration list for PBXNativeTarget "StickmanWarTests" */;
+			buildPhases = (
+				41327DAEC4E6EF3AB074A50A /* Sources */,
+				C86AA075E6E2CF06D7F0377A /* Frameworks */,
+				7898E09F7E81B2C8216D2AE4 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				0902FE1FCE6992C63399D10B /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				69DACC6976D0BFA2744AC62D /* StickmanWarTests */,
+			);
+			name = StickmanWarTests;
+			productName = StickmanWarTests;
+			productReference = A4E42111FB6E71CD1B9610B5 /* StickmanWarTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		45460FB37C56BF472543139B /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					7C671D831127B405A1ED50F0 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					6588CEE971C3B18DB3B5C7A9 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = 7C671D831127B405A1ED50F0;
+					};
+				};
+			};
+			buildConfigurationList = AB8AC0517873609C93829A21 /* Build configuration list for PBXProject "StickmanWar" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = "zh-Hans";
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+				"zh-Hans",
+			);
+			mainGroup = 1FF9DC6AFC7EA49D6988C85C;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 307CE8790487179491AD6F89 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				7C671D831127B405A1ED50F0 /* StickmanWar */,
+				6588CEE971C3B18DB3B5C7A9 /* StickmanWarTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		4365BD8BA425F6DF3D4A9556 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7898E09F7E81B2C8216D2AE4 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1F32F89F439E775D27540C8A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		41327DAEC4E6EF3AB074A50A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		0902FE1FCE6992C63399D10B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 7C671D831127B405A1ED50F0 /* StickmanWar */;
+			targetProxy = 653CD613AD40BAEEFD586FC0 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		ADE795A5FC54207DD2D4BECE /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		FB05267C92B48DB0FA391F94 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		D67913ECA8E937F53554E280 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = StickmanWar/StickmanWar.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "火柴人冷兵器大战";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.strategy-games";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Stickman Cold Steel War. Pure Offline Native macOS.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.stickmanwar.macos;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Debug;
+		};
+		57C79A90C60E6014D40290AA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = StickmanWar/StickmanWar.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "火柴人冷兵器大战";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.strategy-games";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Stickman Cold Steel War. Pure Offline Native macOS.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.stickmanwar.macos;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Release;
+		};
+		DE3753AC8BC383CA0D2A1BC3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.stickmanwar.macos.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/StickmanWar.app/Contents/MacOS/StickmanWar";
+			};
+			name = Debug;
+		};
+		070E403E184C300CE583D483 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.stickmanwar.macos.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/StickmanWar.app/Contents/MacOS/StickmanWar";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		AB8AC0517873609C93829A21 /* Build configuration list for PBXProject "StickmanWar" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				ADE795A5FC54207DD2D4BECE /* Debug */,
+				FB05267C92B48DB0FA391F94 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1562537D9BA4497F5E8ECD38 /* Build configuration list for PBXNativeTarget "StickmanWar" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D67913ECA8E937F53554E280 /* Debug */,
+				57C79A90C60E6014D40290AA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		359166153E354DF4FD82BEB6 /* Build configuration list for PBXNativeTarget "StickmanWarTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DE3753AC8BC383CA0D2A1BC3 /* Debug */,
+				070E403E184C300CE583D483 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 45460FB37C56BF472543139B /* Project object */;
+}
