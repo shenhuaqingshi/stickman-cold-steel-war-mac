@@ -744,7 +744,7 @@ public struct DiplomacyEngine: DiplomacyEngineProtocol, Sendable, Codable, Equat
                 mutateProfile(for: offer.target) { prof in
                     prof.nextBattleMoraleBonus = 8.0
                 }
-            } else if offer.goldIndemnity < 0 || offer.grainTributePerTurn < 0 || computePeaceScoreBreakdown(for: offer).offerValue < 0.0 {
+            } else if offer.goldIndemnity < 0 || offer.grainTributePerTurn < 0 || computePeaceScoreBreakdown(for: offer).rawOfferValue < 0.0 {
                 // DESIGN.md 10.4：战前边缘讹诈（索金/索粮/索城）破裂，对方当回合直接宣战压境
                 _ = declareWar(attacker: offer.target, target: offer.proposer)
             }

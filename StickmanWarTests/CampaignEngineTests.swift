@@ -258,7 +258,7 @@ final class CampaignEngineTests: XCTestCase {
             prisonerDisposition: .ransomForGoldAndCredibility,
             explicitTargetNodeId: "cl_pass"
         )
-        XCTAssertEqual(engine.nodeState(for: "cl_pasture")?.garrisonMoraleModifier, -25.0, accuracy: 1e-6)
+        XCTAssertEqual(engine.nodeState(for: "cl_pasture")?.garrisonMoraleModifier ?? 0.0, -25.0, accuracy: 1e-6)
         XCTAssertEqual(engine.factionState(for: .yanlong).credibility, min(100, credBeforeRansom + 2))
         XCTAssertEqual(engine.factionState(for: .yanlong).commanderLevel, 2, "满 500 EXP 应晋升主帅统御等级")
 

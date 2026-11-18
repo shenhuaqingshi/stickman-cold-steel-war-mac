@@ -54,8 +54,12 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
     private var heroInput: HeroControlInputState = HeroControlInputState()
     private var hudSyncAccumulator: Double = 0.0
     private var encirclementScanAccumulator: Double = 0.0
+    private var aiEconomyThinkAccumulator: Double = 0.0
     private var corpseRingCursor: Int = 0
     private var particleRingCursor: Int = 0
+    private var pendingSoundCues: [BattleSoundCue] = []
+    private var lastClashCueTimestamp: Double = -1.0
+    private var lastBowCueTimestamp: Double = -1.0
 
     /// 预分配分队帧聚合工作数组（杜绝每 0.5s 合围扫描产生堆分配）
     private var scratchSquadSumX: [Double] = []
@@ -211,9 +215,19 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
             if let newFormation = request.formation {
                 squads[sqId].formation = newFormation
                 assignFormationSlotsForSquad(squadId: sqId)
+                enqueueSoundCue(.drumMarch)
+            }
+            if let spread = request.lineSpreadMultiplier {
+                squads[sqId].lineSpreadMultiplier = clamp(spread, minVal: 0.55, maxVal: 2.20)
+                assignFormationSlotsForSquad(squadId: sqId)
             }
             if let newOrder = request.order {
                 squads[sqId].order = newOrder
+                if newOrder == .allOutCharge {
+                    enqueueSoundCue(.warHorn)
+                } else {
+                    enqueueSoundCue(.drumMarch)
+                }
                 if newOrder == .feignedRetreat {
                     let camp = baseCampCoordinates(for: .player)
                     squads[sqId].feignedRetreatTimer = 6.5
@@ -266,13 +280,19 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
 
                     squads[sqId].targetX = clampedX
                     squads[sqId].targetY = clampedY
-                    let firstDest = squads[sqId].waypoints.first
-                    let fdx = (firstDest?.x ?? clampedX) - squads[sqId].anchorX
-                    let fdy = (firstDest?.y ?? clampedY) - squads[sqId].anchorY
-                    if fdx * fdx + fdy * fdy > 16.0 {
-                        squads[sqId].facingRadians = atan2(fdy, fdx)
+                    if let explicitFacing = request.explicitFacingRadians {
+                        squads[sqId].facingRadians = explicitFacing
+                    } else {
+                        let firstDest = squads[sqId].waypoints.first
+                        let fdx = (firstDest?.x ?? clampedX) - squads[sqId].anchorX
+                        let fdy = (firstDest?.y ?? clampedY) - squads[sqId].anchorY
+                        if fdx * fdx + fdy * fdy > 16.0 {
+                            squads[sqId].facingRadians = atan2(fdy, fdx)
+                        }
                     }
                 }
+            } else if let explicitFacing = request.explicitFacingRadians {
+                squads[sqId].facingRadians = explicitFacing
             }
         }
     }
@@ -352,10 +372,280 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
             cameraShakeIntensity = min(1.0, cameraShakeIntensity + events.cameraShakeDelta)
             if skill == .grandWarCry {
                 spawnParticle(kind: .warCryWave, x: playerHero.x, y: playerHero.y, lifetime: 0.65)
+                enqueueSoundCue(.warHorn)
+            } else {
+                enqueueSoundCue(.swordClash)
             }
             refreshHudSnapshotNow()
         }
         return ok
+    }
+
+    /// 提取并清空待播放声效队列（供 SpriteKit 帧同步消费）
+    public mutating func drainPendingSoundCues() -> [BattleSoundCue] {
+        guard !pendingSoundCues.isEmpty else { return [] }
+        let out = pendingSoundCues
+        pendingSoundCues.removeAll(keepingCapacity: true)
+        return out
+    }
+
+    private mutating func enqueueSoundCue(_ cue: BattleSoundCue) {
+        if cue == .swordClash {
+            guard elapsedSeconds - lastClashCueTimestamp >= 0.14 else { return }
+            lastClashCueTimestamp = elapsedSeconds
+        } else if cue == .bowVolley {
+            guard elapsedSeconds - lastBowCueTimestamp >= 0.18 else { return }
+            lastBowCueTimestamp = elapsedSeconds
+        }
+        if pendingSoundCues.count < 8 && !pendingSoundCues.contains(cue) {
+            pendingSoundCues.append(cue)
+        }
+    }
+
+    /// 取消训练队列指定槽位并全额退还金木粮与人口占用
+    @discardableResult
+    public mutating func cancelTrainingQueueItem(side: BattleSide, at index: Int) -> Bool {
+        if side == .player {
+            guard index >= 0 && index < playerState.trainingQueue.count else { return false }
+            let removed = playerState.trainingQueue.remove(at: index)
+            if let stats = UnitConfig.stats(for: removed.unitType) {
+                let refund = computeAdjustedRecruitmentCost(baseCost: stats.cost, category: stats.category, faction: playerState.faction)
+                playerState.gold += refund.gold
+                playerState.wood += refund.wood
+                playerState.grain += Double(refund.grain)
+                playerState.popUsed = max(0, playerState.popUsed - stats.popCap)
+            }
+            refreshHudSnapshotNow()
+            return true
+        } else {
+            guard index >= 0 && index < enemyState.trainingQueue.count else { return false }
+            let removed = enemyState.trainingQueue.remove(at: index)
+            if let stats = UnitConfig.stats(for: removed.unitType) {
+                let refund = computeAdjustedRecruitmentCost(baseCost: stats.cost, category: stats.category, faction: enemyState.faction)
+                enemyState.gold += refund.gold
+                enemyState.wood += refund.wood
+                enemyState.grain += Double(refund.grain)
+                enemyState.popUsed = max(0, enemyState.popUsed - stats.popCap)
+            }
+            return true
+        }
+    }
+
+    /// 《指尖帝国》×《罗马帝国》核心系统：主城启动下一文明时代演进（I -> II -> III -> IV）
+    @discardableResult
+    public mutating func startAgeAdvancement(side: BattleSide) -> Bool {
+        guard !isBaseCampDestroyed(for: side) else { return false }
+        if side == .player {
+            guard playerState.advancingToAge == nil,
+                  let targetAge = playerState.currentAge.nextAge else { return false }
+            let cost = targetAge.advanceCost
+            guard playerState.gold >= cost.gold,
+                  playerState.wood >= cost.wood,
+                  playerState.grain >= Double(cost.grain) else { return false }
+            playerState.gold -= cost.gold
+            playerState.wood -= cost.wood
+            playerState.grain -= Double(cost.grain)
+            playerState.advancingToAge = targetAge
+            playerState.ageAdvanceTotalSec = targetAge.advanceDurationSec
+            playerState.ageAdvanceRemainingSec = targetAge.advanceDurationSec
+            enqueueSoundCue(.drumMarch)
+            refreshHudSnapshotNow()
+            return true
+        } else {
+            guard enemyState.advancingToAge == nil,
+                  let targetAge = enemyState.currentAge.nextAge else { return false }
+            let cost = targetAge.advanceCost
+            guard enemyState.gold >= cost.gold,
+                  enemyState.wood >= cost.wood,
+                  enemyState.grain >= Double(cost.grain) else { return false }
+            enemyState.gold -= cost.gold
+            enemyState.wood -= cost.wood
+            enemyState.grain -= Double(cost.grain)
+            enemyState.advancingToAge = targetAge
+            enemyState.ageAdvanceTotalSec = targetAge.advanceDurationSec
+            enemyState.ageAdvanceRemainingSec = targetAge.advanceDurationSec
+            return true
+        }
+    }
+
+    /// 军械铁匠铺三系攻防射锻造升级（需拥有已完工的铁匠铺；Lv.2 需时代 II，Lv.3 需时代 III）
+    @discardableResult
+    public mutating func upgradeBlacksmithTrack(side: BattleSide, track: BlacksmithUpgradeTrack) -> Bool {
+        let hasBlacksmith = structures.contains {
+            !$0.isDestroyed && !$0.isUnderConstruction && $0.side == side && $0.kind == .blacksmith
+        }
+        guard hasBlacksmith else { return false }
+
+        var state = side == .player ? playerState : enemyState
+        let curLevel: Int
+        switch track {
+        case .meleeForging: curLevel = state.meleeForgeLevel
+        case .armorTempering: curLevel = state.armorTemperLevel
+        case .fletchingcraft: curLevel = state.fletchingLevel
+        }
+        guard curLevel < 3 else { return false }
+        let nextLevel = curLevel + 1
+        if nextLevel == 2 && state.currentAge < .age2IronCity { return false }
+        if nextLevel == 3 && state.currentAge < .age3Imperial { return false }
+
+        let cost = track.cost(forTargetLevel: nextLevel)
+        guard state.gold >= cost.gold,
+              state.wood >= cost.wood,
+              state.grain >= Double(cost.grain) else { return false }
+
+        state.gold -= cost.gold
+        state.wood -= cost.wood
+        state.grain -= Double(cost.grain)
+        switch track {
+        case .meleeForging: state.meleeForgeLevel = nextLevel
+        case .armorTempering: state.armorTemperLevel = nextLevel
+        case .fletchingcraft: state.fletchingLevel = nextLevel
+        }
+
+        if side == .player {
+            playerState = state
+            enqueueSoundCue(.forgeClang)
+            refreshHudSnapshotNow()
+        } else {
+            enemyState = state
+        }
+        return true
+    }
+
+    /// 校验指定逻辑坐标是否允许该阵营落盘营建目标建筑
+    public func canPlaceBuilding(side: BattleSide, kind: SiegeStructureKind, atX x: Double, atY y: Double) -> Bool {
+        guard kind.buildCost != nil else { return false }
+        let fp = kind.defaultFootprint
+        guard x >= 110.0, x <= worldWidth - 110.0, y >= 110.0, y <= worldHeight - 110.0 else { return false }
+        // 限制在本方半场及中线前沿安全带营建（警戒箭塔允许前推至 62% 战线）
+        let maxForwardRatio = kind == .arrowTower ? 0.64 : 0.48
+        if side == .player && x > worldWidth * maxForwardRatio { return false }
+        if side == .enemy && x < worldWidth * (1.0 - maxForwardRatio) { return false }
+        if terrainAt(x: x, y: y) == .riverFord { return false }
+
+        for st in structures where !st.isDestroyed {
+            let minGapX = (st.width + fp.width) * 0.5 + 18.0
+            let minGapY = (st.height + fp.height) * 0.5 + 18.0
+            if abs(x - st.x) < minGapX && abs(y - st.y) < minGapY {
+                return false
+            }
+        }
+        for res in resourceNodes where res.remainingAmount > 0 {
+            if hypot(x - res.x, y - res.y) < max(fp.width, fp.height) * 0.65 + 36.0 {
+                return false
+            }
+        }
+        return true
+    }
+
+    /// 在本阵周边自动寻找一处平整空地供快捷一键营建或 AI 基地扩张使用
+    public func findAutoBuildLocation(side: BattleSide, kind: SiegeStructureKind) -> (x: Double, y: Double)? {
+        let camp = baseCampCoordinates(for: side)
+        let dirSign = side == .player ? 1.0 : -1.0
+        let candidateOffsets: [(dx: Double, dy: Double)] = kind == .arrowTower
+            ? [(380, -180), (380, 180), (520, 0), (300, -320), (300, 320), (620, -150), (620, 150)]
+            : kind == .imperialFarm
+                ? [(-150, -240), (-150, 240), (40, -290), (40, 290), (-160, -400), (-160, 400), (160, -320), (160, 320)]
+                : [(190, -220), (190, 220), (210, -380), (210, 380), (340, -280), (340, 280), (80, -440), (80, 440), (350, -440), (350, 440), (470, -240), (470, 240)]
+
+        for off in candidateOffsets {
+            let cx = camp.x + dirSign * off.dx
+            let cy = camp.y + off.dy
+            if canPlaceBuilding(side: side, kind: kind, atX: cx, atY: cy) {
+                return (cx, cy)
+            }
+        }
+        return nil
+    }
+
+    /// 在指定坐标营建帝国基地建筑，并自动调派最近民夫前往夯土筑城
+    @discardableResult
+    public mutating func constructBuilding(
+        side: BattleSide,
+        kind: SiegeStructureKind,
+        atX x: Double,
+        atY y: Double
+    ) -> Bool {
+        guard let cost = kind.buildCost, !isBaseCampDestroyed(for: side) else { return false }
+        let state = side == .player ? playerState : enemyState
+        guard state.currentAge >= kind.requiredAge,
+              state.gold >= cost.gold,
+              state.wood >= cost.wood,
+              state.grain >= Double(cost.grain),
+              canPlaceBuilding(side: side, kind: kind, atX: x, atY: y) else {
+            return false
+        }
+
+        if side == .player {
+            playerState.gold -= cost.gold
+            playerState.wood -= cost.wood
+            playerState.grain -= Double(cost.grain)
+        } else {
+            enemyState.gold -= cost.gold
+            enemyState.wood -= cost.wood
+            enemyState.grain -= Double(cost.grain)
+        }
+
+        let fp = kind.defaultFootprint
+        let newId = structures.count
+        let initialHp = max(80.0, fp.hp * 0.22)
+        let built = SiegeStructureEntity(
+            id: newId,
+            side: side,
+            kind: kind,
+            x: x,
+            y: y,
+            width: fp.width,
+            height: fp.height,
+            hp: initialHp,
+            armor: fp.armor,
+            attackCooldown: 0.0,
+            isDestroyed: false,
+            granaryLooted: false,
+            isUnderConstruction: true,
+            constructionProgress: 0.08,
+            totalBuildTimeSec: kind.buildTimeSec
+        )
+        structures.append(built)
+
+        // 自动指派最近的一名己方非避险民夫赶赴工地挥锤营建
+        var bestSapperIdx = -1
+        var bestDist = Double.greatestFiniteMagnitude
+        for i in 0..<soldiers.count where soldiers[i].isActive && soldiers[i].hp > 0.0 && soldiers[i].side == side && soldiers[i].unitType == .sapper && !soldiers[i].isGarrisonedInCamp {
+            let d = hypot(soldiers[i].x - x, soldiers[i].y - y)
+            let penalty = soldiers[i].buildTargetStructureId >= 0 ? 320.0 : 0.0
+            if d + penalty < bestDist {
+                bestDist = d + penalty
+                bestSapperIdx = i
+            }
+        }
+        if bestSapperIdx != -1 {
+            soldiers[bestSapperIdx].buildTargetStructureId = newId
+        }
+
+        if side == .player {
+            enqueueSoundCue(.buildHammer)
+            refreshHudSnapshotNow()
+        }
+        return true
+    }
+
+    /// 查找己方一名空闲（或正在采集）民夫的世界坐标，供快捷键 `.` 聚焦镜头
+    public func findSapperForFocus(side: BattleSide = .player) -> (x: Double, y: Double, isIdle: Bool)? {
+        var fallback: (Double, Double)? = nil
+        for s in soldiers where s.isActive && s.hp > 0.0 && s.side == side && s.unitType == .sapper {
+            let idle = s.buildTargetStructureId < 0 && s.gatherTargetNodeId < 0 && !s.isGarrisonedInCamp
+            if idle {
+                return (s.x, s.y, true)
+            }
+            if fallback == nil {
+                fallback = (s.x, s.y)
+            }
+        }
+        if let fb = fallback {
+            return (fb.0, fb.1, false)
+        }
+        return nil
     }
 
     /// 战场大营招募常规/专属兵种（严格校验势力专属合法性、苍狼禁造投石车、人口上限与势力造价修正）
@@ -553,6 +843,7 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
                     case .arrowTower: return "敌方【守御箭塔】"
                     case .woodenCheval: return "敌方【拒马木栅】"
                     case .siegeLadder: return "登城云梯"
+                    default: return "敌方【\(st.kind.displayName)】"
                     }
                 }()
                 return (st.x, st.y, stLabel)
@@ -636,9 +927,11 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
         // 1. 重建 120px 均匀空间哈希网格
         spatialGrid.rebuild(from: soldiers, terrainZones: terrainZones)
 
-        // 2. 结算双方粮草消耗、三级断粮惩罚、大营保底军饷、25s 应急民夫防死锁与训练队列
+        // 2. 结算双方粮草消耗、三级断粮惩罚、大营保底军饷、时代演进、基地建筑产出与训练队列
+        stepBuildingConstructionScaffolding(deltaTime: simDt)
         stepSideEconomyAndLogistics(side: .player, deltaTime: simDt)
         stepSideEconomyAndLogistics(side: .enemy, deltaTime: simDt)
+        stepAiEconomyAndBaseBuilder(deltaTime: simDt)
 
         // 3. 刷新各军团坐标质心、涉水比例，并每 0.5s 执行八象限包抄/合围与半渡而击判定
         stepSquadCentroidsAndMorale(deltaTime: simDt)
@@ -738,10 +1031,48 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
             state.bloodMoonFervorRemainingSec = max(0.0, state.bloodMoonFervorRemainingSec - deltaTime)
         }
 
-        // 本阵大营每秒微量保底军饷（+1.2 金/s，商盟 +35%；+0.5 木/s）
+        // 统计己方已建成功能建筑数量（军屯民居、屯田农庄、军营、靶场、马厩、器械所）
+        var completedHouses = 0
+        var completedFarms = 0
+        var completedBarracks = 0
+        var completedRanges = 0
+        var completedStables = 0
+        var completedWorkshops = 0
+        for st in structures where !st.isDestroyed && !st.isUnderConstruction && st.side == side {
+            switch st.kind {
+            case .houseQuarter: completedHouses += 1
+            case .imperialFarm: completedFarms += 1
+            case .barracks: completedBarracks += 1
+            case .archeryRange: completedRanges += 1
+            case .stables: completedStables += 1
+            case .siegeWorkshop: completedWorkshops += 1
+            default: break
+            }
+        }
+
+        // 推进四阶文明时代演进（I -> II -> III -> IV）
+        var completedAgeUp: ImperialAge? = nil
+        if let targetAge = state.advancingToAge {
+            if campDestroyed {
+                state.advancingToAge = nil
+                state.ageAdvanceRemainingSec = 0.0
+            } else {
+                state.ageAdvanceRemainingSec -= deltaTime
+                if state.ageAdvanceRemainingSec <= 0.0 {
+                    state.currentAge = targetAge
+                    state.advancingToAge = nil
+                    state.ageAdvanceRemainingSec = 0.0
+                    completedAgeUp = targetAge
+                }
+            }
+        }
+        state.popCap = min(340, state.basePopCap + state.currentAge.popCapBonus + completedHouses * 16)
+
+        // 本阵大营保底军饷 + 军屯民居税赋 + 屯田农庄持续收粮
         if !campDestroyed {
             let goldMult = state.faction == .shamo ? 1.35 : 1.0
-            state.passiveGoldAccumulator += GameConstants.basePassiveGoldPerSec * goldMult * deltaTime
+            let houseGoldRate = Double(completedHouses) * 0.35
+            state.passiveGoldAccumulator += (GameConstants.basePassiveGoldPerSec + houseGoldRate) * goldMult * deltaTime
             state.passiveWoodAccumulator += GameConstants.basePassiveWoodPerSec * deltaTime
             if state.passiveGoldAccumulator >= 1.0 {
                 let gained = Int(state.passiveGoldAccumulator.rounded(.down))
@@ -753,6 +1084,9 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
                 state.wood += gained
                 state.passiveWoodAccumulator -= Double(gained)
             }
+        }
+        if completedFarms > 0 {
+            state.grain += Double(completedFarms) * 3.4 * deltaTime
         }
 
         // 粮草消耗与断粮计时
@@ -781,11 +1115,26 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
             state.emergencySapperTimerSec = 0.0
         }
 
-        // 推进本阵训练队列
+        // 推进本阵与专业兵站训练队列（拥有步兵营/靶场/马厩/器械所可显著加速对应兵种出兵！）
         var queuedPop = 0
         var idx = 0
         while idx < state.trainingQueue.count {
-            state.trainingQueue[idx].remainingSeconds -= deltaTime
+            let uCat = UnitConfig.stats(for: state.trainingQueue[idx].unitType)?.category ?? .infantry
+            let speedMult: Double = {
+                switch uCat {
+                case .infantry, .polearm, .shock:
+                    return min(2.2, 1.0 + Double(completedBarracks) * 0.35)
+                case .ranged:
+                    return min(2.2, 1.0 + Double(completedRanges) * 0.35)
+                case .cavalry:
+                    return min(2.2, 1.0 + Double(completedStables) * 0.35)
+                case .siege:
+                    return min(2.4, 1.0 + Double(completedWorkshops) * 0.40)
+                case .support:
+                    return 1.0
+                }
+            }()
+            state.trainingQueue[idx].remainingSeconds -= deltaTime * speedMult
             if state.trainingQueue[idx].remainingSeconds <= 0.0 {
                 let done = state.trainingQueue.remove(at: idx)
                 if !campDestroyed {
@@ -817,7 +1166,7 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
         if state.faction == .shamo && state.gold <= 0 && state.rationStage == .starving {
             var desertedPop = 0
             for sIdx in 0..<squads.count where squads[sIdx].side == side && squads[sIdx].isMercenary && squads[sIdx].aliveCount > 0 {
-                let unitPop = UnitConfig.stats(for: squads[sIdx].unitType)?.popCap ?? 1
+                let unitPop = UnitConfig.stats(for: squads[sIdx].primaryUnitType)?.popCap ?? 1
                 for uIdx in 0..<soldiers.count where soldiers[uIdx].isActive && soldiers[uIdx].squadId == sIdx && soldiers[uIdx].hp > 0.0 {
                     soldiers[uIdx].isActive = false
                     soldiers[uIdx].hp = 0.0
@@ -832,8 +1181,23 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
         state.popUsed = activePop + queuedPop
         if side == .player {
             playerState = state
+            if let newAge = completedAgeUp {
+                enqueueSoundCue(.ageFanfare)
+                // 时代演进加固主城生命上限 +350
+                for sIdx in 0..<structures.count where !structures[sIdx].isDestroyed && structures[sIdx].side == .player && structures[sIdx].kind == .baseCamp {
+                    structures[sIdx].maxHp += 350.0
+                    structures[sIdx].hp = min(structures[sIdx].maxHp, structures[sIdx].hp + 450.0)
+                }
+                _ = newAge
+            }
         } else {
             enemyState = state
+            if completedAgeUp != nil {
+                for sIdx in 0..<structures.count where !structures[sIdx].isDestroyed && structures[sIdx].side == .enemy && structures[sIdx].kind == .baseCamp {
+                    structures[sIdx].maxHp += 350.0
+                    structures[sIdx].hp = min(structures[sIdx].maxHp, structures[sIdx].hp + 450.0)
+                }
+            }
         }
 
         if spawnEmergencySapper {
@@ -1611,9 +1975,22 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
             }
 
             // 10. 敌军士兵或敌方主帅进入有效射程/近战距离 -> 执行攻击结算
+            // 若该编队正奉命突袭尚未被劫掠的敌方本阵粮仓，且士兵已逼近敌本阵外围，则优先直扑本阵粮车，不被外围护卫/敌帅缠住脱靶
+            let isFocusingUnlootedEnemyCamp: Bool = {
+                guard hasValidSquad, soldiers[i].category != .ranged, soldiers[i].category != .siege else { return false }
+                let sq = squads[sqId]
+                guard sqOrder == .raidSupply || sqOrder == .allOutCharge else { return false }
+                guard let enemyCampSt = structures.first(where: { !$0.isDestroyed && $0.side == enemySide && $0.kind == .baseCamp && !$0.granaryLooted }) else {
+                    return false
+                }
+                return hypot(sq.targetX - enemyCampSt.x, sq.targetY - enemyCampSt.y) <= 200.0
+                    && hypot(soldiers[i].x - enemyCampSt.x, soldiers[i].y - enemyCampSt.y) <= 460.0
+            }()
+
             let oppHero = enemySide == .player ? playerHero : enemyHero
             let heroDist = oppHero.isActiveOnField ? hypot(oppHero.x - soldiers[i].x, oppHero.y - soldiers[i].y) : Double.greatestFiniteMagnitude
             let canTargetOppHero = oppHero.isActiveOnField
+                && !isFocusingUnlootedEnemyCamp
                 && heroDist <= searchRadius
                 && heroDist >= soldiers[i].minRange
                 && sqOrder != .feignedRetreat
@@ -1646,7 +2023,7 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
                 continue
             }
 
-            if nearestEnemyIdx != -1 {
+            if nearestEnemyIdx != -1 && !isFocusingUnlootedEnemyCamp {
                 let ex = soldiers[nearestEnemyIdx].x
                 let ey = soldiers[nearestEnemyIdx].y
                 let dist = nearestSoldierDist
@@ -1696,7 +2073,7 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
             var goalX = soldiers[i].x
             var goalY = soldiers[i].y
 
-            if nearestEnemyIdx != -1 && sqOrder != .holdGround && sqOrder != .feignedRetreat && sqOrder != .retreat && soldiers[i].category != .ranged && soldiers[i].category != .siege {
+            if nearestEnemyIdx != -1 && !isFocusingUnlootedEnemyCamp && sqOrder != .holdGround && sqOrder != .feignedRetreat && sqOrder != .retreat && soldiers[i].category != .ranged && soldiers[i].category != .siege {
                 goalX = soldiers[nearestEnemyIdx].x
                 goalY = soldiers[nearestEnemyIdx].y
             } else if canTargetOppHero && sqOrder != .holdGround && soldiers[i].category != .ranged && soldiers[i].category != .siege {
@@ -1968,9 +2345,16 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
         }
         soldiers[attackerIndex] = attacker
 
+        let aSideState = attacker.side == .player ? playerState : enemyState
+        let tSideState = target.side == .player ? playerState : enemyState
+        let aVetMult = 1.0 + Double(max(attacker.veterancyStars, aSq?.veterancyStars ?? 0)) * 0.09
+        let aMeleeTechMult = aSideState.currentAge.attackMultiplierBonus * (1.0 + Double(aSideState.meleeForgeLevel) * 0.12) * aVetMult
+        let tArmorBonus = tSideState.currentAge.flatArmorBonus + Double(tSideState.armorTemperLevel * 6) + Double(max(target.veterancyStars, tSq?.veterancyStars ?? 0) * 3)
+        let tBlockBonus = Double(tSideState.armorTemperLevel) * 0.04
+
         let dmgOut = DamageMoraleCalculator.calculateDamage(
             DamageCalculationInput(
-                baseAttack: attacker.baseAttack,
+                baseAttack: attacker.baseAttack * aMeleeTechMult,
                 attackerArmorPenetration: attacker.armorPenetration,
                 attackerChargeMultiplier: attacker.chargeMultiplier,
                 attackerAntiCavMultiplier: attacker.antiCavalryMultiplier,
@@ -1986,8 +2370,8 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
                 attackerIsRouting: aSq?.isRouting ?? false,
                 attackerCamelSpooked: attacker.camelSpookedTimer > 0.0,
                 isMelee: true,
-                targetBaseArmor: target.baseArmor,
-                targetShieldRangedBlock: target.shieldRangedBlock,
+                targetBaseArmor: target.baseArmor + tArmorBonus,
+                targetShieldRangedBlock: min(0.85, target.shieldRangedBlock + tBlockBonus),
                 targetCategory: target.category,
                 targetFaction: target.faction,
                 targetTerrain: tTerrain,
@@ -2014,6 +2398,7 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
             soldiers[attackerIndex].hp = min(soldiers[attackerIndex].maxHp, soldiers[attackerIndex].hp + dmgOut.finalDamage * 0.18)
         }
 
+        enqueueSoundCue(.swordClash)
         applyResolvedDamage(
             toSoldierAt: targetIndex,
             damage: dmgOut.finalDamage,
@@ -2021,7 +2406,8 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
             killerSide: attacker.side,
             causedByCharge: usedCharge,
             attackerFaction: attacker.faction,
-            attackerSquadId: attacker.squadId
+            attackerSquadId: attacker.squadId,
+            attackerSoldierIndex: attackerIndex
         )
 
         // 重型巨斧兵半圆横扫溅射 & 霜原巨熊破阵者重锤扇形震飞前排
@@ -2092,7 +2478,14 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
             aimY += rng.nextRange(min: -34.0, max: 34.0)
         }
 
-        let baseDmg = attacker.baseAttack * (brokeStealth ? 1.80 : 1.0)
+        let rState = attacker.side == .player ? playerState : enemyState
+        let rSq = (attacker.squadId >= 0 && attacker.squadId < squads.count) ? squads[attacker.squadId] : nil
+        let rVetMult = 1.0 + Double(max(attacker.veterancyStars, rSq?.veterancyStars ?? 0)) * 0.09
+        let rangedTechMult = rState.currentAge.attackMultiplierBonus * (1.0 + Double(rState.fletchingLevel) * 0.12) * rVetMult
+        let hasWorkshopBonus = structures.contains { !$0.isDestroyed && !$0.isUnderConstruction && $0.side == attacker.side && $0.kind == .siegeWorkshop }
+        let workshopStructMult = hasWorkshopBonus ? 1.15 : 1.0
+        let baseDmg = attacker.baseAttack * rangedTechMult * (brokeStealth ? 1.80 : 1.0)
+        enqueueSoundCue(attacker.unitType == .trebuchet ? .boulderBoom : .bowVolley)
         switch attacker.unitType {
         case .ballista:
             spawnProjectile(
@@ -2111,7 +2504,7 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
                 pierceCount: 3, // 破甲连弩车直线贯穿 3 人
                 appliesPoison: false,
                 moraleShock: 1.8,
-                structureBonus: 1.25
+                structureBonus: 1.25 * workshopStructMult
             )
         case .trebuchet:
             let yanlongSiegeMult = attacker.faction == .yanlong ? 1.25 : 1.0
@@ -2131,7 +2524,7 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
                 pierceCount: 1,
                 appliesPoison: false,
                 moraleShock: 8.5,
-                structureBonus: 3.50 * yanlongSiegeMult // 对城防建筑 350% 结构伤害
+                structureBonus: 3.50 * yanlongSiegeMult * workshopStructMult // 对城防建筑 350% 结构伤害
             )
         case .tieyingPaviseCrossbow:
             spawnProjectile(
@@ -2231,7 +2624,7 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
                 continue
             }
 
-            guard structures[idx].kind == .arrowTower else { continue }
+            guard structures[idx].kind == .arrowTower, !structures[idx].isUnderConstruction else { continue }
             structures[idx].attackCooldown = max(0.0, structures[idx].attackCooldown - deltaTime)
             guard structures[idx].attackCooldown <= 0.0 else { continue }
 
@@ -2560,6 +2953,55 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
 
         soldiers[unitIndex].isGarrisonedInCamp = false
 
+        // 优先执行帝国基地建筑施工：若已领受营建任务或基地周围有在建脚手架，赶赴工地挥锤筑城！
+        var buildIdx = soldiers[unitIndex].buildTargetStructureId
+        if buildIdx < 0 || buildIdx >= structures.count || structures[buildIdx].isDestroyed || !structures[buildIdx].isUnderConstruction {
+            buildIdx = -1
+            var nearestDist = Double.greatestFiniteMagnitude
+            for sIdx in 0..<structures.count where structures[sIdx].side == side && !structures[sIdx].isDestroyed && structures[sIdx].isUnderConstruction {
+                let d = hypot(structures[sIdx].x - soldiers[unitIndex].x, structures[sIdx].y - soldiers[unitIndex].y)
+                if d < nearestDist {
+                    nearestDist = d
+                    buildIdx = sIdx
+                }
+            }
+            soldiers[unitIndex].buildTargetStructureId = buildIdx
+        }
+
+        if buildIdx >= 0 && buildIdx < structures.count {
+            let st = structures[buildIdx]
+            let dx = st.x - soldiers[unitIndex].x
+            let dy = st.y - soldiers[unitIndex].y
+            let dist = hypot(dx, dy)
+            let reachDist = max(st.width, st.height) * 0.55 + 24.0
+            if dist <= reachDist {
+                soldiers[unitIndex].vx = 0.0
+                soldiers[unitIndex].vy = 0.0
+                soldiers[unitIndex].facingRadians = atan2(dy, dx)
+                soldiers[unitIndex].actionState = .meleeStrike
+                let rate = 1.65 / max(1.0, st.totalBuildTimeSec)
+                structures[buildIdx].constructionProgress = min(1.0, structures[buildIdx].constructionProgress + rate * deltaTime)
+                structures[buildIdx].hp = min(structures[buildIdx].maxHp, structures[buildIdx].hp + structures[buildIdx].maxHp * rate * deltaTime)
+                if structures[buildIdx].constructionProgress >= 1.0 {
+                    structures[buildIdx].isUnderConstruction = false
+                    structures[buildIdx].constructionProgress = 1.0
+                    structures[buildIdx].hp = structures[buildIdx].maxHp
+                    soldiers[unitIndex].buildTargetStructureId = -1
+                    if side == .player {
+                        enqueueSoundCue(.buildHammer)
+                    }
+                }
+            } else {
+                let spd = soldiers[unitIndex].baseMoveSpeed * 1.08
+                soldiers[unitIndex].vx = (dx / dist) * spd
+                soldiers[unitIndex].vy = (dy / dist) * spd
+                soldiers[unitIndex].facingRadians = atan2(dy, dx)
+                soldiers[unitIndex].actionState = .marchRun
+                moveSoldierWithWallAndTrapCheck(unitIndex: unitIndex, deltaTime: deltaTime)
+            }
+            return
+        }
+
         // 若背包已装满采集资源，运回本阵大营入库
         if let carriedKind = soldiers[unitIndex].carryingResourceKind, soldiers[unitIndex].carryingAmount > 0.0 {
             let dx = camp.x - soldiers[unitIndex].x
@@ -2788,7 +3230,8 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
         causedByCharge: Bool,
         attackerFaction: FactionId,
         attackerSquadId: Int,
-        byHeroSide: BattleSide? = nil
+        byHeroSide: BattleSide? = nil,
+        attackerSoldierIndex: Int = -1
     ) {
         guard soldiers[targetIndex].isActive && soldiers[targetIndex].hp > 0.0 else { return }
         soldiers[targetIndex].hp -= damage
@@ -2811,6 +3254,26 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
 
         if soldiers[targetIndex].hp <= 0.0 {
             killSoldier(at: targetIndex, killerSide: killerSide, byHeroSide: byHeroSide)
+            // 《罗马帝国》百战老兵晋升机制：斩敌累积晋升 ★ / ★★ / ★★★ 精锐金星！
+            if attackerSoldierIndex >= 0 && attackerSoldierIndex < soldiers.count && soldiers[attackerSoldierIndex].isActive {
+                soldiers[attackerSoldierIndex].killsCount += 1
+                let k = soldiers[attackerSoldierIndex].killsCount
+                let nextStar = k >= 6 ? 3 : (k >= 3 ? 2 : (k >= 1 ? 1 : 0))
+                if nextStar > soldiers[attackerSoldierIndex].veterancyStars {
+                    soldiers[attackerSoldierIndex].veterancyStars = nextStar
+                    soldiers[attackerSoldierIndex].maxHp *= 1.06
+                    soldiers[attackerSoldierIndex].hp = min(soldiers[attackerSoldierIndex].maxHp, soldiers[attackerSoldierIndex].hp + 28.0)
+                }
+            }
+            if attackerSquadId >= 0 && attackerSquadId < squads.count {
+                squads[attackerSquadId].totalKills += 1
+                let sqKills = squads[attackerSquadId].totalKills
+                let nextSqStar = sqKills >= 24 ? 3 : (sqKills >= 12 ? 2 : (sqKills >= 5 ? 1 : 0))
+                if nextSqStar > squads[attackerSquadId].veterancyStars {
+                    squads[attackerSquadId].veterancyStars = nextSqStar
+                    applyInstantSquadMoraleDelta(squadId: attackerSquadId, delta: 8.0)
+                }
+            }
         }
 
         // 玄甲重骑法则：冲锋击溃敌队重置 50% 冲锋冷却并回升士气 +12
@@ -3101,7 +3564,8 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
         guard unit.category == .ranged || unit.category == .siege || unit.unitType == .canglangKeshigHorseArcher else {
             return unit.attackRange
         }
-        var range = unit.attackRange
+        let sideState = unit.side == .player ? playerState : enemyState
+        var range = unit.attackRange + Double(sideState.fletchingLevel) * 18.0
         if unit.faction == .tieying {
             range *= 1.12
         } else if unit.faction == .shuangyuan && unit.category == .ranged {
@@ -3440,15 +3904,106 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
         }
     }
 
+    private mutating func stepBuildingConstructionScaffolding(deltaTime: Double) {
+        for idx in 0..<structures.count where !structures[idx].isDestroyed && structures[idx].isUnderConstruction {
+            // 基础自推进脚手架（防止民夫全忙时工地永久停滞；民夫到场时速度提升 4 倍）
+            let passiveRate = 0.35 / max(1.0, structures[idx].totalBuildTimeSec)
+            structures[idx].constructionProgress = min(1.0, structures[idx].constructionProgress + passiveRate * deltaTime)
+            structures[idx].hp = min(structures[idx].maxHp, structures[idx].hp + structures[idx].maxHp * passiveRate * deltaTime)
+            if structures[idx].constructionProgress >= 1.0 {
+                structures[idx].isUnderConstruction = false
+                structures[idx].constructionProgress = 1.0
+                structures[idx].hp = structures[idx].maxHp
+            }
+        }
+    }
+
+    /// 《指尖帝国》风格 AI 基地经营与时代演进思考器（仅在常规充裕经济局触发，不影响低金特殊单测）
+    private mutating func stepAiEconomyAndBaseBuilder(deltaTime: Double) {
+        let interval: Double = {
+            switch context.aiDifficulty {
+            case .recruit: return 7.5
+            case .veteran: return 5.0
+            case .emperor: return 3.2
+            }
+        }()
+        aiEconomyThinkAccumulator += deltaTime
+        guard aiEconomyThinkAccumulator >= interval else { return }
+        aiEconomyThinkAccumulator = 0.0
+        guard !isBaseCampDestroyed(for: .enemy) else { return }
+
+        // 仅在 AI 拥有基础作战部队且金木充足时经营基地，保证单测纯净性
+        guard enemyState.totalInitialSoldiers >= 8, enemyState.gold >= 95, enemyState.wood >= 95 else { return }
+
+        let aiStructs = structures.filter { !$0.isDestroyed && $0.side == .enemy }
+        let hasFarm = aiStructs.contains { $0.kind == .imperialFarm }
+        let hasBarracks = aiStructs.contains { $0.kind == .barracks }
+        let hasBlacksmith = aiStructs.contains { $0.kind == .blacksmith }
+        let hasStables = aiStructs.contains { $0.kind == .stables }
+        let towerCount = aiStructs.filter { $0.kind == .arrowTower }.count
+
+        // 1. 优先建设屯田农庄与步兵军营、铁匠铺
+        if !hasFarm && enemyState.grain < 950.0, let pt = findAutoBuildLocation(side: .enemy, kind: .imperialFarm) {
+            _ = constructBuilding(side: .enemy, kind: .imperialFarm, atX: pt.x, atY: pt.y)
+            return
+        }
+        if !hasBarracks, let pt = findAutoBuildLocation(side: .enemy, kind: .barracks) {
+            _ = constructBuilding(side: .enemy, kind: .barracks, atX: pt.x, atY: pt.y)
+            return
+        }
+        if !hasBlacksmith, let pt = findAutoBuildLocation(side: .enemy, kind: .blacksmith) {
+            _ = constructBuilding(side: .enemy, kind: .blacksmith, atX: pt.x, atY: pt.y)
+            return
+        }
+
+        // 2. 时代演进与铁匠铺升级
+        if enemyState.advancingToAge == nil && enemyState.currentAge < .age4Hegemon {
+            if startAgeAdvancement(side: .enemy) {
+                return
+            }
+        }
+        if hasBlacksmith {
+            if upgradeBlacksmithTrack(side: .enemy, track: .meleeForging) { return }
+            if upgradeBlacksmithTrack(side: .enemy, track: .armorTempering) { return }
+            if upgradeBlacksmithTrack(side: .enemy, track: .fletchingcraft) { return }
+        }
+        if enemyState.currentAge >= .age2IronCity && !hasStables, let pt = findAutoBuildLocation(side: .enemy, kind: .stables) {
+            _ = constructBuilding(side: .enemy, kind: .stables, atX: pt.x, atY: pt.y)
+            return
+        }
+        if enemyState.currentAge >= .age2IronCity && towerCount < 2, let pt = findAutoBuildLocation(side: .enemy, kind: .arrowTower) {
+            _ = constructBuilding(side: .enemy, kind: .arrowTower, atX: pt.x, atY: pt.y)
+            return
+        }
+
+        // 3. 持续训练生力军补充前线
+        if enemyState.trainingQueue.count < 3 && enemyState.popUsed + 4 <= enemyState.popCap {
+            let exclusive = FactionConfig.config(for: enemyState.faction)?.exclusiveUnitId ?? .shieldSwordsman
+            if enemyState.currentAge >= .age2IronCity && recruitUnit(side: .enemy, unitType: exclusive, corpsRole: .vanguardCenter) {
+                return
+            }
+            let fallbackPool: [UnitTypeId] = [.shieldSwordsman, .pikeman, .compositeArcher, .lightCavalry]
+            let pick = fallbackPool[Int(rng.nextUInt64() % UInt64(fallbackPool.count))]
+            _ = recruitUnit(side: .enemy, unitType: pick, corpsRole: .vanguardCenter)
+        }
+    }
+
     private mutating func refreshHudSnapshotNow() {
         var pAlive = 0
         var eAlive = 0
+        var idleSappers = 0
         var moraleWeightedSum = 0.0
         var moraleSoldierCount = 0
 
         for i in 0..<soldiers.count where soldiers[i].isActive && soldiers[i].hp > 0.0 {
             if soldiers[i].side == .player {
                 pAlive += 1
+                if soldiers[i].unitType == .sapper
+                    && !soldiers[i].isGarrisonedInCamp
+                    && soldiers[i].buildTargetStructureId < 0
+                    && soldiers[i].gatherTargetNodeId < 0 {
+                    idleSappers += 1
+                }
             } else {
                 eAlive += 1
             }
@@ -3458,6 +4013,11 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
             moraleSoldierCount += sq.aliveCount
         }
         let avgMorale = moraleSoldierCount > 0 ? (moraleWeightedSum / Double(moraleSoldierCount)) : (outcome == .playerCommanderMartyred ? 0.0 : GameConstants.moraleBase)
+        let playerBuildings = structures.filter { !$0.isDestroyed && $0.side == .player }.count
+        let ageProgress: Double = {
+            guard playerState.advancingToAge != nil else { return 0.0 }
+            return max(0.0, min(1.0, 1.0 - playerState.ageAdvanceRemainingSec / max(1.0, playerState.ageAdvanceTotalSec)))
+        }()
 
         latestHudSnapshot = BattleHudSnapshot(
             elapsedSeconds: elapsedSeconds,
@@ -3479,7 +4039,16 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
             heroVitalState: playerHero.vitalState,
             heroActiveWeapon: playerHero.activeWeapon,
             heroRemainingArrows: playerHero.remainingArrows,
-            outcome: outcome
+            outcome: outcome,
+            currentAge: playerState.currentAge,
+            advancingToAge: playerState.advancingToAge,
+            ageAdvanceProgress: ageProgress,
+            enemyCurrentAge: enemyState.currentAge,
+            meleeForgeLevel: playerState.meleeForgeLevel,
+            armorTemperLevel: playerState.armorTemperLevel,
+            fletchingLevel: playerState.fletchingLevel,
+            idleSapperCount: idleSappers,
+            activeBuildingCount: playerBuildings
         )
     }
 
@@ -3635,7 +4204,7 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
         let midY = worldHeight * 0.5
 
         for entry in roster {
-            guard let stats = UnitConfig.stats(for: entry.unitType) else { continue }
+            guard UnitConfig.stats(for: entry.unitType) != nil else { continue }
             // 强校验苍狼汗国禁造配重投石车规则，若自定义表误传则自动降级为破甲连弩车
             let safeUnitType: UnitTypeId = (faction == .canglang && entry.unitType == .trebuchet) ? .ballista : entry.unitType
             guard let finalStats = UnitConfig.stats(for: safeUnitType) else { continue }
@@ -3794,8 +4363,24 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
             squads.append(sq)
         }
 
-        let spawnX = clamp(camp.x + dirSign * 95.0, minVal: 30.0, maxVal: worldWidth - 30.0)
-        let spawnY = clamp(camp.y + rng.nextRange(min: -45.0, max: 45.0), minVal: 30.0, maxVal: worldHeight - 30.0)
+        // 若拥有已建成的对应专业兵营/靶场/马厩/器械所，优先从前线专业兵站出兵集结！
+        let preferredKind: SiegeStructureKind? = {
+            switch stats.category {
+            case .infantry, .polearm, .shock: return .barracks
+            case .ranged: return .archeryRange
+            case .cavalry: return .stables
+            case .siege: return .siegeWorkshop
+            case .support: return nil
+            }
+        }()
+        var origin = camp
+        if let pk = preferredKind,
+           let forwardBuilding = structures.first(where: { !$0.isDestroyed && !$0.isUnderConstruction && $0.side == side && $0.kind == pk }) {
+            origin = (forwardBuilding.x, forwardBuilding.y)
+        }
+
+        let spawnX = clamp(origin.x + dirSign * 75.0, minVal: 30.0, maxVal: worldWidth - 30.0)
+        let spawnY = clamp(origin.y + rng.nextRange(min: -45.0, max: 45.0), minVal: 30.0, maxVal: worldHeight - 30.0)
         if allocateSoldierSlot(
             side: side,
             faction: faction,
@@ -3896,6 +4481,7 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
         }
         guard total > 0 else { return }
         let formation = squads[squadId].formation
+        let spread = squads[squadId].lineSpreadMultiplier
         var curSlot = 0
         for i in 0..<soldiers.count where soldiers[i].isActive && soldiers[i].hp > 0.0 && soldiers[i].squadId == squadId {
             let spacing = soldiers[i].category == .cavalry ? 26.0 : (soldiers[i].category == .siege ? 38.0 : 20.0)
@@ -3903,7 +4489,8 @@ public struct BattleSimulationEngine: BattleSimulationEngineProtocol, Sendable {
                 slotIndex: curSlot,
                 totalSlots: total,
                 formation: formation,
-                spacing: spacing
+                spacing: spacing,
+                lineSpreadMultiplier: spread
             )
             soldiers[i].slotOffsetX = off.forwardX
             soldiers[i].slotOffsetY = off.lateralY

@@ -53,8 +53,10 @@ public struct BattleTacticalAI: Sendable, Equatable {
         let opponentSide = aiSide.opponent
 
         // 1. 汇总敌我军团态势中心、士气缺口与远程/近战比重
-        var opponentMainX = worldWidth * 0.30
+        var opponentMainX = opponentSide == .player ? worldWidth * 0.30 : worldWidth * 0.70
         var opponentMainY = worldHeight * 0.50
+        var sumOpponentX = 0.0
+        var sumOpponentY = 0.0
         var opponentRangedX = opponentMainX
         var opponentRangedY = opponentMainY
         var hasOpponentRanged = false
@@ -73,9 +75,10 @@ public struct BattleTacticalAI: Sendable, Equatable {
             let sq = squads[idx]
             if sq.side == opponentSide {
                 opponentSquadCount += 1
-                opponentMainX += sq.anchorX
-                opponentMainY += sq.anchorY
-                if sq.corpsRole == .siegeBattery || UnitConfig.stats(for: sq.primaryUnitType)?.category == .ranged {
+                sumOpponentX += sq.anchorX
+                sumOpponentY += sq.anchorY
+                let oppCat = UnitConfig.stats(for: sq.primaryUnitType)?.category
+                if sq.corpsRole == .siegeBattery || oppCat == .ranged || oppCat == .siege {
                     opponentRangedX = sq.anchorX
                     opponentRangedY = sq.anchorY
                     hasOpponentRanged = true
@@ -103,8 +106,12 @@ public struct BattleTacticalAI: Sendable, Equatable {
         }
 
         if opponentSquadCount > 0 {
-            opponentMainX /= Double(opponentSquadCount + 1)
-            opponentMainY /= Double(opponentSquadCount + 1)
+            opponentMainX = sumOpponentX / Double(opponentSquadCount)
+            opponentMainY = sumOpponentY / Double(opponentSquadCount)
+            if !hasOpponentRanged {
+                opponentRangedX = opponentMainX
+                opponentRangedY = opponentMainY
+            }
         }
         guard aiAliveSquadCount > 0 else { return }
 
@@ -168,6 +175,7 @@ public struct BattleTacticalAI: Sendable, Equatable {
             && hasHighGroundOrBridge(in: terrainZones) {
             chosenDoctrine = .highGroundHedgehog
         } else if (personality == .guerrillaTrapper || personality == .nomadOpportunist)
+            && aiAliveSquadCount >= 2
             && !feignedRetreatTriggeredOnce
             && elapsedSeconds >= 12.0 && elapsedSeconds <= 58.0 {
             chosenDoctrine = .feignedRetreatAmbush

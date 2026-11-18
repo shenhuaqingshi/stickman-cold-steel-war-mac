@@ -331,6 +331,10 @@ public struct CampaignWorldState: Sendable, Codable, Equatable {
     public var eventLogs: [CampaignEventLogEntry]
     /// 确定性随机数状态
     public var rng: CampaignDeterministicRNG
+    /// 玩家行省赋税政策（兼容旧存档，nil 视为常制赋税）
+    public var playerTaxPolicy: CampaignTaxPolicy?
+    /// 已领取的朝廷/元老院王命悬赏阶段列表
+    public var mandateClaimedStages: [Int]?
 
     /// 便捷读取全部 28 组双边外交数组
     public var bilateralDiplomacyStates: [BilateralDiplomacyState] {
@@ -353,7 +357,9 @@ public struct CampaignWorldState: Sendable, Codable, Equatable {
         totalEnemiesDefeated: Int = 0,
         nextLogSequence: Int = 1,
         eventLogs: [CampaignEventLogEntry] = [],
-        rng: CampaignDeterministicRNG = CampaignDeterministicRNG()
+        rng: CampaignDeterministicRNG = CampaignDeterministicRNG(),
+        playerTaxPolicy: CampaignTaxPolicy? = nil,
+        mandateClaimedStages: [Int]? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.campaignId = campaignId
@@ -371,6 +377,8 @@ public struct CampaignWorldState: Sendable, Codable, Equatable {
         self.nextLogSequence = max(1, nextLogSequence)
         self.eventLogs = eventLogs
         self.rng = rng
+        self.playerTaxPolicy = playerTaxPolicy
+        self.mandateClaimedStages = mandateClaimedStages
     }
 
     /// 导出供 `SaveStorageManager.writeSlotSummary` 使用的轻量槽位摘要
@@ -1685,6 +1693,19 @@ public struct CampaignTurnEngine: Sendable, Codable, Equatable {
                 rawGold = Int((Double(rawGold) * 1.35).rounded())
             }
 
+            // 玩家赋税国策修正（《罗马全面战争》轻徭薄赋 / 常制 / 军国重敛）
+            if fid == worldState.playerFaction, let policy = worldState.playerTaxPolicy {
+                switch policy {
+                case .benevolentLow:
+                    rawGold = Int((Double(rawGold) * 0.80).rounded())
+                    rawGrain = Int((Double(rawGrain) * 1.12).rounded())
+                case .standardBalanced:
+                    break
+                case .warLevyHigh:
+                    rawGold = Int((Double(rawGold) * 1.32).rounded())
+                }
+            }
+
             let tradeGold = worldState.diplomacy.calculateTradeIncome(
                 for: fid,
                 unlockedTechs: Set(fState.unlockedTechIds)
@@ -1839,18 +1860,19 @@ public struct CampaignTurnEngine: Sendable, Codable, Equatable {
             case .fullSupply, .extendedMarch, .overextended:
                 mutateFaction(fid) { $0.mainArmyIsolatedTurns = 0 }
             case .severed(let turns):
+                var lostCount = 0
                 mutateFaction(fid) { fac in
                     fac.mainArmyIsolatedTurns = turns
                     if turns >= 2 {
-                        let lost = Self.applyPercentageAttrition(
+                        lostCount = Self.applyPercentageAttrition(
                             rate: CampaignSupplyService.severedStarvationAttritionRate,
                             to: &fac.mainArmyRoster,
                             minimumRemaining: 4
                         )
-                        if fid == worldState.playerFaction && lost > 0 {
-                            playerStarvationAttrition[fState.mainArmyNodeId, default: 0] += lost
-                        }
                     }
+                }
+                if fid == worldState.playerFaction && lostCount > 0 {
+                    playerStarvationAttrition[fState.mainArmyNodeId, default: 0] += lostCount
                 }
                 if turns == 1 && fid == worldState.playerFaction && !playerWarningNodes.contains(fState.mainArmyNodeId) {
                     playerWarningNodes.append(fState.mainArmyNodeId)
@@ -2640,6 +2662,57 @@ public struct CampaignTurnEngine: Sendable, Codable, Equatable {
         if var node = worldState.nodesById[nodeId] {
             body(&node)
             worldState.nodesById[nodeId] = node
+        }
+    }
+
+    // MARK: - 帝国赋税国策与元老院/王庭悬赏诏令接口
+
+    public var currentPlayerTaxPolicy: CampaignTaxPolicy {
+        worldState.playerTaxPolicy ?? .standardBalanced
+    }
+
+    public mutating func setPlayerTaxPolicy(_ policy: CampaignTaxPolicy) {
+        worldState.playerTaxPolicy = policy
+        appendLog(category: "赋税诏令", summary: "主帅颁布国策：【\(policy.displayName)】（\(policy.effectBrief)）")
+    }
+
+    /// 检查并领取帝国阶段悬赏诏令奖励（1: 拓土 7 城；2: 胜战 3 场或签 2 商约；3: 雄踞 12 城）
+    @discardableResult
+    public mutating func claimImperialMandateReward(stage: Int) -> (succeeded: Bool, message: String) {
+        var claimed = worldState.mandateClaimedStages ?? []
+        guard !claimed.contains(stage) else {
+            return (false, "该阶段帝国诏令赏赐已领取")
+        }
+        let pFac = worldState.playerFaction
+        let owned = controlledNodes(of: pFac).count
+        let tradeCount = FactionId.allCases.filter { $0 != pFac && worldState.diplomacy.hasTradeAgreement(between: pFac, and: $0) }.count
+
+        switch stage {
+        case 1:
+            guard owned >= 7 else { return (false, "尚未达成诏令目标（需掌控 ≥ 7 座城关，当前 \(owned) 座）") }
+            claimed.append(1)
+            worldState.mandateClaimedStages = claimed
+            mutateFaction(pFac) { $0.gold += 350; $0.wood += 180 }
+            appendLog(category: "王庭犒赏", summary: "达成【初展宏图·掌控七城】诏令，获赐黄金 350、良木 180！")
+            return (true, "已领受诏令赏赐：黄金 +350、木材 +180！")
+        case 2:
+            guard worldState.totalBattlesWon >= 3 || tradeCount >= 2 else {
+                return (false, "尚未达成诏令目标（需累计获胜 ≥ 3 场或开通 ≥ 2 条商路）")
+            }
+            claimed.append(2)
+            worldState.mandateClaimedStages = claimed
+            mutateFaction(pFac) { $0.gold += 450; $0.grain += 360 }
+            appendLog(category: "王庭犒赏", summary: "达成【威震四方·武功通商】诏令，获赐黄金 450、军粮 360！")
+            return (true, "已领受诏令赏赐：黄金 +450、军粮 +360！")
+        case 3:
+            guard owned >= 12 else { return (false, "尚未达成诏令目标（需掌控 ≥ 12 座城关，当前 \(owned) 座）") }
+            claimed.append(3)
+            worldState.mandateClaimedStages = claimed
+            mutateFaction(pFac) { $0.gold += 700; $0.wood += 350; $0.grain += 500 }
+            appendLog(category: "王庭犒赏", summary: "达成【雄踞九州·十二连城】诏令，获赐黄金 700、良木 350、军粮 500！")
+            return (true, "已领受霸主重赏：黄金 +700、木材 +350、军粮 +500！")
+        default:
+            return (false, "未知诏令阶段")
         }
     }
 

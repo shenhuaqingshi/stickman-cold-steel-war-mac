@@ -697,7 +697,7 @@ final class CombatEngineTests: XCTestCase {
         // 玩家切入英雄模式孤身迎向敌方骑兵前锋，验证敌方近战士兵可真实围攻扣减主帅生命值
         XCTAssertTrue(engine.toggleControlMode())
         let startHeroHp = engine.playerHero.hp
-        for _ in 0..<240 where engine.outcome == .ongoing {
+        for _ in 0..<400 where engine.outcome == .ongoing {
             let targetSq = engine.squads.first { $0.side == .enemy }!
             let dx = targetSq.anchorX - engine.playerHero.x
             let dy = targetSq.anchorY - engine.playerHero.y

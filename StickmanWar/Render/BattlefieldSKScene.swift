@@ -1,7 +1,7 @@
 import AppKit
 import SpriteKit
 
-/// 推送给战场底部/左侧战术面板的分队轻量状态摘要（4Hz 节流）
+/// 推送给战场底部战术面板的分队轻量状态摘要（4Hz 节流）
 public struct SquadUiBrief: Sendable, Equatable, Identifiable {
     public let id: Int
     public let corpsRole: ArmyCorpsRole
@@ -14,6 +14,18 @@ public struct SquadUiBrief: Sendable, Equatable, Identifiable {
     public let formation: FormationType
     public let order: TacticalOrder
     public let encirclement: EncirclementState
+    public let veterancyStars: Int
+    public let totalKills: Int
+}
+
+/// 推送给右上/右下交互式雷达小地图的轻量光点
+public struct MinimapRadarDot: Sendable, Equatable, Identifiable {
+    public let id: Int
+    public let normX: Double
+    public let normY: Double
+    public let isPlayer: Bool
+    public let isBuilding: Bool
+    public let isResource: Bool
 }
 
 /// 推送给外层 `BattlefieldView` 的组合实时帧摘要（4Hz 节流，严防高频刷新 SwiftUI 视图树）
@@ -22,6 +34,7 @@ public struct BattlefieldUiSyncPacket: Sendable, Equatable {
     public let playerSquads: [SquadUiBrief]
     public let selectedSquadIds: [Int]
     public let trainingQueueCount: Int
+    public let trainingQueueItems: [TrainingQueueItem]
     public let aiDoctrine: BattlefieldAiDoctrine
     public let aiSiegePhase: SiegeTacticalPhase?
     public let heroBreakthroughCd: Double
@@ -31,16 +44,25 @@ public struct BattlefieldUiSyncPacket: Sendable, Equatable {
     public let heroBowChargeRatio: Double
     public let heroKills: Int
     public let bloodMoonFervorRemaining: Double
+    public let simulationSpeed: Double
+    public let pendingBuildKind: SiegeStructureKind?
+    public let minimapDots: [MinimapRadarDot]
+    public let cameraNormCenterX: Double
+    public let cameraNormCenterY: Double
+    public let cameraNormWidth: Double
+    public let cameraNormHeight: Double
 }
 
-// MARK: - 预分配火柴人单兵骨骼关节节点（零 SKShapeNode 路径重建）
+// MARK: - 预分配重装军团火柴人单兵骨骼关节节点（1.45x 英雄比例 + 盔甲披风 + 脚底选中环 + 负伤血条）
 
 @MainActor
 private final class PooledSoldierNode {
     let root = SKNode()
+    let selectFootRing: SKSpriteNode
     let shadow: SKSpriteNode
     let mountNode: SKSpriteNode
     let siegeNode: SKSpriteNode
+    let capeNode: SKSpriteNode
     let legLeft: SKSpriteNode
     let legRight: SKSpriteNode
     let torso: SKSpriteNode
@@ -50,92 +72,120 @@ private final class PooledSoldierNode {
     let shieldNode: SKSpriteNode
     let bannerPole: SKSpriteNode
     let bannerCloth: SKSpriteNode
+    let hpBarBg: SKSpriteNode
+    let hpBarFill: SKSpriteNode
     let stateDot: SKSpriteNode
 
     var cachedUnitType: UnitTypeId?
     var cachedFaction: FactionId?
 
     init(atlas: StickmanTextureAtlas) {
-        shadow = SKSpriteNode(texture: atlas.circleFilled, color: NSColor(calibratedWhite: 0.0, alpha: 0.32), size: CGSize(width: 16, height: 7))
+        selectFootRing = SKSpriteNode(texture: atlas.selectionRingDecal, color: .white, size: CGSize(width: 28, height: 14))
+        selectFootRing.position = CGPoint(x: 0, y: -11)
+        selectFootRing.zPosition = -0.1
+        selectFootRing.isHidden = true
+
+        shadow = SKSpriteNode(texture: atlas.circleFilled, color: NSColor(calibratedWhite: 0.0, alpha: 0.38), size: CGSize(width: 22, height: 9))
         shadow.colorBlendFactor = 1.0
-        shadow.position = CGPoint(x: 0, y: -9)
+        shadow.position = CGPoint(x: 0, y: -11)
         shadow.zPosition = 0.0
 
-        mountNode = SKSpriteNode(texture: atlas.mountBody, color: .brown, size: CGSize(width: 32, height: 18))
+        mountNode = SKSpriteNode(texture: atlas.mountBody, color: .brown, size: CGSize(width: 44, height: 25))
         mountNode.colorBlendFactor = 1.0
-        mountNode.position = CGPoint(x: 0, y: -4)
+        mountNode.position = CGPoint(x: 0, y: -5)
         mountNode.zPosition = 0.1
         mountNode.isHidden = true
 
-        siegeNode = SKSpriteNode(texture: atlas.siegeChassis, color: .brown, size: CGSize(width: 42, height: 28))
+        siegeNode = SKSpriteNode(texture: atlas.siegeChassis, color: .brown, size: CGSize(width: 56, height: 38))
         siegeNode.colorBlendFactor = 1.0
-        siegeNode.position = CGPoint(x: 0, y: 0)
+        siegeNode.position = CGPoint(x: 0, y: 2)
         siegeNode.zPosition = 0.15
         siegeNode.isHidden = true
 
-        legLeft = SKSpriteNode(texture: atlas.whitePixel, color: .white, size: CGSize(width: 2.6, height: 9.5))
+        capeNode = SKSpriteNode(texture: atlas.flowingCape, color: .red, size: CGSize(width: 14, height: 18))
+        capeNode.colorBlendFactor = 1.0
+        capeNode.position = CGPoint(x: -4.5, y: 6.5)
+        capeNode.zPosition = 0.18
+        capeNode.isHidden = true
+
+        legLeft = SKSpriteNode(texture: atlas.limbSegment, color: .white, size: CGSize(width: 4.6, height: 12.5))
         legLeft.colorBlendFactor = 1.0
         legLeft.anchorPoint = CGPoint(x: 0.5, y: 1.0)
-        legLeft.position = CGPoint(x: -2.0, y: -1.0)
-        legLeft.zPosition = 0.2
+        legLeft.position = CGPoint(x: -2.8, y: 0.0)
+        legLeft.zPosition = 0.22
 
-        legRight = SKSpriteNode(texture: atlas.whitePixel, color: .white, size: CGSize(width: 2.6, height: 9.5))
+        legRight = SKSpriteNode(texture: atlas.limbSegment, color: .white, size: CGSize(width: 4.6, height: 12.5))
         legRight.colorBlendFactor = 1.0
         legRight.anchorPoint = CGPoint(x: 0.5, y: 1.0)
-        legRight.position = CGPoint(x: 2.0, y: -1.0)
-        legRight.zPosition = 0.2
+        legRight.position = CGPoint(x: 2.8, y: 0.0)
+        legRight.zPosition = 0.22
 
-        torso = SKSpriteNode(texture: atlas.whitePixel, color: .red, size: CGSize(width: 4.5, height: 11.5))
+        torso = SKSpriteNode(texture: atlas.armoredTorso, color: .red, size: CGSize(width: 11.5, height: 16.5))
         torso.colorBlendFactor = 1.0
-        torso.position = CGPoint(x: 0, y: 4.5)
-        torso.zPosition = 0.3
+        torso.position = CGPoint(x: 0, y: 7.0)
+        torso.zPosition = 0.30
 
-        head = SKSpriteNode(texture: atlas.circleFilled, color: .white, size: CGSize(width: 7.8, height: 7.8))
+        head = SKSpriteNode(texture: atlas.legionCrestHead, color: .white, size: CGSize(width: 15.5, height: 15.5))
         head.colorBlendFactor = 1.0
-        head.position = CGPoint(x: 0, y: 13.5)
-        head.zPosition = 0.4
+        head.position = CGPoint(x: 0, y: 19.5)
+        head.zPosition = 0.42
 
-        armMain = SKSpriteNode(texture: atlas.whitePixel, color: .white, size: CGSize(width: 8.5, height: 2.4))
+        armMain = SKSpriteNode(texture: atlas.limbSegment, color: .white, size: CGSize(width: 11.0, height: 4.2))
         armMain.colorBlendFactor = 1.0
         armMain.anchorPoint = CGPoint(x: 0.0, y: 0.5)
-        armMain.position = CGPoint(x: 1.0, y: 7.5)
-        armMain.zPosition = 0.45
+        armMain.position = CGPoint(x: 1.5, y: 10.5)
+        armMain.zPosition = 0.46
 
-        weaponNode = SKSpriteNode(texture: atlas.saberBlade, color: NSColor(calibratedWhite: 0.90, alpha: 1.0), size: CGSize(width: 18, height: 6))
+        weaponNode = SKSpriteNode(texture: atlas.saberBlade, color: NSColor(calibratedWhite: 0.95, alpha: 1.0), size: CGSize(width: 25, height: 8.5))
         weaponNode.colorBlendFactor = 1.0
         weaponNode.anchorPoint = CGPoint(x: 0.15, y: 0.5)
-        weaponNode.position = CGPoint(x: 7.5, y: 0.0)
-        weaponNode.zPosition = 0.5
+        weaponNode.position = CGPoint(x: 9.0, y: 0.0)
+        weaponNode.zPosition = 0.50
 
-        shieldNode = SKSpriteNode(texture: atlas.roundShield, color: .gray, size: CGSize(width: 11, height: 11))
+        shieldNode = SKSpriteNode(texture: atlas.paviseShield, color: .gray, size: CGSize(width: 13.5, height: 19.5))
         shieldNode.colorBlendFactor = 1.0
-        shieldNode.position = CGPoint(x: 4.5, y: 5.5)
-        shieldNode.zPosition = 0.55
+        shieldNode.position = CGPoint(x: 6.0, y: 7.5)
+        shieldNode.zPosition = 0.56
         shieldNode.isHidden = true
 
-        bannerPole = SKSpriteNode(texture: atlas.whitePixel, color: NSColor(calibratedRed: 0.85, green: 0.72, blue: 0.42, alpha: 1.0), size: CGSize(width: 2.0, height: 28.0))
+        bannerPole = SKSpriteNode(texture: atlas.whitePixel, color: NSColor(calibratedRed: 0.90, green: 0.76, blue: 0.40, alpha: 1.0), size: CGSize(width: 2.6, height: 36.0))
         bannerPole.colorBlendFactor = 1.0
-        bannerPole.position = CGPoint(x: -4.0, y: 14.0)
-        bannerPole.zPosition = 0.6
+        bannerPole.position = CGPoint(x: -5.0, y: 18.0)
+        bannerPole.zPosition = 0.60
         bannerPole.isHidden = true
 
-        bannerCloth = SKSpriteNode(texture: atlas.bannerFlag, color: .red, size: CGSize(width: 16, height: 11))
+        bannerCloth = SKSpriteNode(texture: atlas.bannerFlag, color: .red, size: CGSize(width: 22, height: 15))
         bannerCloth.colorBlendFactor = 1.0
         bannerCloth.anchorPoint = CGPoint(x: 0.0, y: 0.5)
-        bannerCloth.position = CGPoint(x: -3.0, y: 24.0)
+        bannerCloth.position = CGPoint(x: -4.0, y: 31.0)
         bannerCloth.zPosition = 0.62
         bannerCloth.isHidden = true
 
-        stateDot = SKSpriteNode(texture: atlas.circleFilled, color: .white, size: CGSize(width: 5.5, height: 5.5))
+        hpBarBg = SKSpriteNode(texture: atlas.whitePixel, color: NSColor(calibratedWhite: 0.06, alpha: 0.85), size: CGSize(width: 18, height: 3.0))
+        hpBarBg.colorBlendFactor = 1.0
+        hpBarBg.position = CGPoint(x: 0, y: 28.5)
+        hpBarBg.zPosition = 0.66
+        hpBarBg.isHidden = true
+
+        hpBarFill = SKSpriteNode(texture: atlas.whitePixel, color: .systemGreen, size: CGSize(width: 16.5, height: 2.0))
+        hpBarFill.colorBlendFactor = 1.0
+        hpBarFill.anchorPoint = CGPoint(x: 0.0, y: 0.5)
+        hpBarFill.position = CGPoint(x: -8.25, y: 28.5)
+        hpBarFill.zPosition = 0.67
+        hpBarFill.isHidden = true
+
+        stateDot = SKSpriteNode(texture: atlas.circleFilled, color: .white, size: CGSize(width: 6.5, height: 6.5))
         stateDot.colorBlendFactor = 1.0
-        stateDot.position = CGPoint(x: 0, y: 20.5)
-        stateDot.zPosition = 0.65
+        stateDot.position = CGPoint(x: 0, y: 33.0)
+        stateDot.zPosition = 0.68
         stateDot.isHidden = true
 
         armMain.addChild(weaponNode)
+        root.addChild(selectFootRing)
         root.addChild(shadow)
         root.addChild(mountNode)
         root.addChild(siegeNode)
+        root.addChild(capeNode)
         root.addChild(legLeft)
         root.addChild(legRight)
         root.addChild(torso)
@@ -144,6 +194,8 @@ private final class PooledSoldierNode {
         root.addChild(shieldNode)
         root.addChild(bannerPole)
         root.addChild(bannerCloth)
+        root.addChild(hpBarBg)
+        root.addChild(hpBarFill)
         root.addChild(stateDot)
         root.isHidden = true
     }
@@ -154,6 +206,7 @@ private final class PooledSoldierNode {
 @MainActor
 private final class PooledHeroNode {
     let root = SKNode()
+    let glowHalo: SKSpriteNode
     let auraRing: SKSpriteNode
     let cape: SKSpriteNode
     let torso: SKSpriteNode
@@ -167,60 +220,64 @@ private final class PooledHeroNode {
     let titleLabel: SKLabelNode
 
     init(atlas: StickmanTextureAtlas, primaryColor: NSColor, accentColor: NSColor, title: String) {
-        auraRing = SKSpriteNode(texture: atlas.circleRing, color: accentColor.withAlphaComponent(0.55), size: CGSize(width: 38, height: 38))
+        glowHalo = SKSpriteNode(texture: atlas.softGlowHalo, color: accentColor.withAlphaComponent(0.36), size: CGSize(width: 78, height: 78))
+        glowHalo.colorBlendFactor = 1.0
+        glowHalo.position = CGPoint(x: 0, y: 4)
+
+        auraRing = SKSpriteNode(texture: atlas.circleRing, color: accentColor.withAlphaComponent(0.72), size: CGSize(width: 48, height: 48))
         auraRing.colorBlendFactor = 1.0
         auraRing.position = CGPoint(x: 0, y: -4)
 
-        cape = SKSpriteNode(texture: atlas.bannerFlag, color: primaryColor, size: CGSize(width: 18, height: 15))
+        cape = SKSpriteNode(texture: atlas.flowingCape, color: primaryColor, size: CGSize(width: 24, height: 28))
         cape.colorBlendFactor = 1.0
-        cape.anchorPoint = CGPoint(x: 1.0, y: 0.5)
-        cape.position = CGPoint(x: -2, y: 6)
-        cape.zRotation = .pi * 0.08
+        cape.anchorPoint = CGPoint(x: 0.85, y: 0.5)
+        cape.position = CGPoint(x: -3, y: 9)
 
-        torso = SKSpriteNode(texture: atlas.whitePixel, color: primaryColor, size: CGSize(width: 7.0, height: 16.0))
+        torso = SKSpriteNode(texture: atlas.armoredTorso, color: primaryColor, size: CGSize(width: 16.0, height: 22.0))
         torso.colorBlendFactor = 1.0
-        torso.position = CGPoint(x: 0, y: 6)
+        torso.position = CGPoint(x: 0, y: 9)
 
-        crownHead = SKSpriteNode(texture: atlas.heroCrownHead, color: accentColor, size: CGSize(width: 17, height: 17))
+        crownHead = SKSpriteNode(texture: atlas.heroCrownHead, color: accentColor, size: CGSize(width: 25, height: 25))
         crownHead.colorBlendFactor = 1.0
-        crownHead.position = CGPoint(x: 0, y: 19)
+        crownHead.position = CGPoint(x: 0, y: 26)
 
-        weaponArm = SKSpriteNode(texture: atlas.whitePixel, color: .white, size: CGSize(width: 10, height: 3.0))
+        weaponArm = SKSpriteNode(texture: atlas.limbSegment, color: .white, size: CGSize(width: 13, height: 4.5))
         weaponArm.colorBlendFactor = 1.0
         weaponArm.anchorPoint = CGPoint(x: 0.0, y: 0.5)
-        weaponArm.position = CGPoint(x: 1, y: 10)
+        weaponArm.position = CGPoint(x: 2, y: 13)
 
-        weaponSprite = SKSpriteNode(texture: atlas.saberBlade, color: accentColor, size: CGSize(width: 26, height: 8))
+        weaponSprite = SKSpriteNode(texture: atlas.saberBlade, color: accentColor, size: CGSize(width: 34, height: 11))
         weaponSprite.colorBlendFactor = 1.0
         weaponSprite.anchorPoint = CGPoint(x: 0.12, y: 0.5)
-        weaponSprite.position = CGPoint(x: 8, y: 0)
+        weaponSprite.position = CGPoint(x: 10, y: 0)
         weaponArm.addChild(weaponSprite)
 
-        shieldSprite = SKSpriteNode(texture: atlas.roundShield, color: accentColor, size: CGSize(width: 15, height: 15))
+        shieldSprite = SKSpriteNode(texture: atlas.roundShield, color: accentColor, size: CGSize(width: 20, height: 20))
         shieldSprite.colorBlendFactor = 1.0
-        shieldSprite.position = CGPoint(x: 7, y: 7)
+        shieldSprite.position = CGPoint(x: 9, y: 10)
 
-        hpBg = SKSpriteNode(texture: atlas.whitePixel, color: NSColor(calibratedWhite: 0.1, alpha: 0.85), size: CGSize(width: 36, height: 4.5))
+        hpBg = SKSpriteNode(texture: atlas.whitePixel, color: NSColor(calibratedWhite: 0.08, alpha: 0.88), size: CGSize(width: 46, height: 5.5))
         hpBg.colorBlendFactor = 1.0
-        hpBg.position = CGPoint(x: 0, y: 31)
+        hpBg.position = CGPoint(x: 0, y: 41)
 
-        hpFill = SKSpriteNode(texture: atlas.whitePixel, color: NSColor.systemGreen, size: CGSize(width: 34, height: 3.0))
+        hpFill = SKSpriteNode(texture: atlas.whitePixel, color: NSColor.systemGreen, size: CGSize(width: 44, height: 3.8))
         hpFill.colorBlendFactor = 1.0
         hpFill.anchorPoint = CGPoint(x: 0.0, y: 0.5)
-        hpFill.position = CGPoint(x: -17, y: 31)
+        hpFill.position = CGPoint(x: -22, y: 41)
 
-        bowChargeBar = SKSpriteNode(texture: atlas.whitePixel, color: NSColor.systemYellow, size: CGSize(width: 0, height: 2.5))
+        bowChargeBar = SKSpriteNode(texture: atlas.whitePixel, color: NSColor.systemYellow, size: CGSize(width: 0, height: 3.0))
         bowChargeBar.colorBlendFactor = 1.0
         bowChargeBar.anchorPoint = CGPoint(x: 0.0, y: 0.5)
-        bowChargeBar.position = CGPoint(x: -17, y: 27)
+        bowChargeBar.position = CGPoint(x: -22, y: 36)
         bowChargeBar.isHidden = true
 
-        titleLabel = SKLabelNode(fontNamed: "PingFangSC-Semibold")
+        titleLabel = SKLabelNode(fontNamed: "PingFangSC-Heavy")
         titleLabel.text = title
-        titleLabel.fontSize = 11
+        titleLabel.fontSize = 12
         titleLabel.fontColor = accentColor
-        titleLabel.position = CGPoint(x: 0, y: 36)
+        titleLabel.position = CGPoint(x: 0, y: 48)
 
+        root.addChild(glowHalo)
         root.addChild(auraRing)
         root.addChild(cape)
         root.addChild(torso)
@@ -234,44 +291,73 @@ private final class PooledHeroNode {
     }
 }
 
-// MARK: - 预分配建筑与军团战术标牌节点
+// MARK: - 预分配帝国建筑（含脚手架施工进度与篝火光晕）与军团鹰旗标牌节点
 
 @MainActor
 private final class PooledStructureNode {
     let root = SKNode()
+    let brazierGlow: SKSpriteNode
     let body: SKSpriteNode
+    let scaffoldOverlay: SKSpriteNode
     let hpBg: SKSpriteNode
     let hpFill: SKSpriteNode
     let label: SKLabelNode
     let maxBarWidth: CGFloat
     let baseTitle: String
     var wasRenderedDestroyed: Bool = false
+    var lastProgressBucket: Int = -1
 
-    init(atlas: StickmanTextureAtlas, width: CGFloat, height: CGFloat, color: NSColor, title: String) {
+    init(atlas: StickmanTextureAtlas, kind: SiegeStructureKind, width: CGFloat, height: CGFloat, color: NSColor, title: String) {
         baseTitle = title
-        maxBarWidth = max(44.0, min(120.0, width))
-        body = SKSpriteNode(texture: atlas.whitePixel, color: color, size: CGSize(width: width, height: height))
-        body.colorBlendFactor = 1.0
+        maxBarWidth = max(48.0, min(130.0, width))
 
-        hpBg = SKSpriteNode(texture: atlas.whitePixel, color: NSColor(calibratedWhite: 0.08, alpha: 0.85), size: CGSize(width: maxBarWidth + 2, height: 5))
+        brazierGlow = SKSpriteNode(
+            texture: atlas.softGlowHalo,
+            color: NSColor(calibratedRed: 1.0, green: 0.68, blue: 0.24, alpha: 0.30),
+            size: CGSize(width: width * 1.45, height: height * 1.45)
+        )
+        brazierGlow.colorBlendFactor = 1.0
+        brazierGlow.isHidden = (kind == .wallSegment || kind == .woodenCheval || kind == .siegeLadder)
+
+        body = SKSpriteNode(texture: atlas.buildingTexture(for: kind), color: color, size: CGSize(width: width, height: height))
+        // 对需要保留原彩细节的农庄/城墙采用适度混色，对帅帐与兵营屋顶染色鲜明
+        body.colorBlendFactor = (kind == .imperialFarm || kind == .woodenCheval || kind == .siegeLadder) ? 0.15 : 0.58
+
+        scaffoldOverlay = SKSpriteNode(
+            texture: atlas.woodenChevalTextureFallback(atlas),
+            color: NSColor(calibratedRed: 0.85, green: 0.68, blue: 0.36, alpha: 0.72),
+            size: CGSize(width: width * 0.92, height: height * 0.92)
+        )
+        scaffoldOverlay.colorBlendFactor = 0.65
+        scaffoldOverlay.isHidden = true
+
+        hpBg = SKSpriteNode(texture: atlas.whitePixel, color: NSColor(calibratedWhite: 0.06, alpha: 0.88), size: CGSize(width: maxBarWidth + 2, height: 5.5))
         hpBg.colorBlendFactor = 1.0
-        hpBg.position = CGPoint(x: 0, y: height * 0.5 + 10)
+        hpBg.position = CGPoint(x: 0, y: height * 0.5 + 11)
 
-        hpFill = SKSpriteNode(texture: atlas.whitePixel, color: .systemGreen, size: CGSize(width: maxBarWidth, height: 3.5))
+        hpFill = SKSpriteNode(texture: atlas.whitePixel, color: .systemGreen, size: CGSize(width: maxBarWidth, height: 3.8))
         hpFill.colorBlendFactor = 1.0
         hpFill.anchorPoint = CGPoint(x: 0.0, y: 0.5)
-        hpFill.position = CGPoint(x: -maxBarWidth * 0.5, y: height * 0.5 + 10)
+        hpFill.position = CGPoint(x: -maxBarWidth * 0.5, y: height * 0.5 + 11)
 
         label = SKLabelNode(fontNamed: "PingFangSC-Semibold")
         label.text = title
-        label.fontSize = 13
-        label.fontColor = .white
-        label.position = CGPoint(x: 0, y: height * 0.5 + 18)
+        label.fontSize = 12.5
+        label.fontColor = NSColor(calibratedRed: 0.98, green: 0.93, blue: 0.80, alpha: 1.0)
+        label.position = CGPoint(x: 0, y: height * 0.5 + 20)
 
+        root.addChild(brazierGlow)
         root.addChild(body)
+        root.addChild(scaffoldOverlay)
         root.addChild(hpBg)
         root.addChild(hpFill)
         root.addChild(label)
+    }
+}
+
+private extension StickmanTextureAtlas {
+    func woodenChevalTextureFallback(_ atlas: StickmanTextureAtlas) -> SKTexture {
+        atlas.buildingTexture(for: .woodenCheval)
     }
 }
 
@@ -281,30 +367,36 @@ private final class PooledSquadMarkerNode {
     let selectRing: SKSpriteNode
     let moraleBg: SKSpriteNode
     let moraleFill: SKSpriteNode
+    let badgeBg: SKSpriteNode
     let badgeLabel: SKLabelNode
     let orderLine: SKSpriteNode
     var cachedBadgeText: String = ""
 
     init(atlas: StickmanTextureAtlas) {
-        selectRing = SKSpriteNode(texture: atlas.circleRing, color: NSColor.systemGreen.withAlphaComponent(0.70), size: CGSize(width: 84, height: 52))
-        selectRing.colorBlendFactor = 1.0
+        selectRing = SKSpriteNode(texture: atlas.selectionRingDecal, color: NSColor.systemYellow.withAlphaComponent(0.82), size: CGSize(width: 108, height: 62))
+        selectRing.colorBlendFactor = 0.35
         selectRing.isHidden = true
 
-        moraleBg = SKSpriteNode(texture: atlas.whitePixel, color: NSColor(calibratedWhite: 0.08, alpha: 0.82), size: CGSize(width: 46, height: 4.5))
+        moraleBg = SKSpriteNode(texture: atlas.whitePixel, color: NSColor(calibratedWhite: 0.06, alpha: 0.88), size: CGSize(width: 54, height: 5.0))
         moraleBg.colorBlendFactor = 1.0
-        moraleBg.position = CGPoint(x: 0, y: 34)
+        moraleBg.position = CGPoint(x: 0, y: 40)
 
-        moraleFill = SKSpriteNode(texture: atlas.whitePixel, color: .systemCyan, size: CGSize(width: 44, height: 3.0))
+        moraleFill = SKSpriteNode(texture: atlas.whitePixel, color: .systemCyan, size: CGSize(width: 52, height: 3.4))
         moraleFill.colorBlendFactor = 1.0
         moraleFill.anchorPoint = CGPoint(x: 0.0, y: 0.5)
-        moraleFill.position = CGPoint(x: -22, y: 34)
+        moraleFill.position = CGPoint(x: -26, y: 40)
+
+        badgeBg = SKSpriteNode(texture: atlas.whitePixel, color: NSColor(calibratedWhite: 0.07, alpha: 0.78), size: CGSize(width: 126, height: 18))
+        badgeBg.colorBlendFactor = 1.0
+        badgeBg.position = CGPoint(x: 0, y: 52)
 
         badgeLabel = SKLabelNode(fontNamed: "PingFangSC-Semibold")
-        badgeLabel.fontSize = 11
+        badgeLabel.fontSize = 11.5
         badgeLabel.fontColor = .white
-        badgeLabel.position = CGPoint(x: 0, y: 41)
+        badgeLabel.verticalAlignmentMode = .center
+        badgeLabel.position = CGPoint(x: 0, y: 52)
 
-        orderLine = SKSpriteNode(texture: atlas.whitePixel, color: NSColor.systemYellow.withAlphaComponent(0.38), size: CGSize(width: 2, height: 2))
+        orderLine = SKSpriteNode(texture: atlas.whitePixel, color: NSColor(calibratedRed: 1.0, green: 0.86, blue: 0.36, alpha: 0.52), size: CGSize(width: 2, height: 2.6))
         orderLine.colorBlendFactor = 1.0
         orderLine.anchorPoint = CGPoint(x: 0.0, y: 0.5)
         orderLine.isHidden = true
@@ -313,6 +405,7 @@ private final class PooledSquadMarkerNode {
         root.addChild(selectRing)
         root.addChild(moraleBg)
         root.addChild(moraleFill)
+        root.addChild(badgeBg)
         root.addChild(badgeLabel)
         root.isHidden = true
     }
@@ -320,13 +413,12 @@ private final class PooledSquadMarkerNode {
 
 // MARK: - SpriteKit 真实冷兵器大战场渲染与键鼠操控宿主
 
-/// SpriteKit 大战场原生渲染与实时模拟场景（承载 `BattleSimulationEngine` 30Hz 模拟、600 骨骼火柴人合批渲染、视口裁剪与全套 Mac 键鼠操控）
 @MainActor
 public final class BattlefieldSKScene: SKScene {
     public let worldWidth: Double
     public let worldHeight: Double
 
-    /// 确定性战斗物理与 AI 核心引擎
+    /// 确定性战斗物理、RTS 营建、四时代演进与 AI 核心引擎
     public private(set) var engine: BattleSimulationEngine
 
     /// 当前 RTS 选中的我军分队 ID 列表
@@ -342,12 +434,13 @@ public final class BattlefieldSKScene: SKScene {
     private let structureLayer = SKNode()
     private let squadOverlayLayer = SKNode()
     private let unitBatchLayer = SKNode()
+    private let forestCanopyLayer = SKNode()
     private let projectileLayer = SKNode()
     private let effectLayer = SKNode()
     private let uiOverlayLayer = SKNode()
     private let worldCamera = SKCameraNode()
 
-    // 预分配对象池（严禁帧循环动态 new 节点）
+    // 预分配对象池
     private var soldierPoolNodes: [PooledSoldierNode] = []
     private var projectilePoolNodes: [SKSpriteNode] = []
     private var corpsePoolNodes: [SKSpriteNode] = []
@@ -357,15 +450,23 @@ public final class BattlefieldSKScene: SKScene {
     private var resourceAmountLabels: [SKLabelNode] = []
     private var trapPoolNodes: [SKSpriteNode] = []
     private var squadMarkerNodes: [PooledSquadMarkerNode] = []
+    private var waterRippleNodes: [SKSpriteNode] = []
+    private var weatherParticleNodes: [SKSpriteNode] = []
     private var playerHeroNode: PooledHeroNode?
     private var enemyHeroNode: PooledHeroNode?
 
-    /// 鼠标框选、右键路标与英雄瞄准准星节点
+    /// 框选、右键拉阵线预览、营建蓝图虚影与英雄准星节点
     private let marqueeFillNode = SKSpriteNode(
-        color: NSColor(calibratedRed: 0.35, green: 0.85, blue: 0.48, alpha: 0.20),
+        color: NSColor(calibratedRed: 0.96, green: 0.82, blue: 0.34, alpha: 0.20),
         size: .zero
     )
-    private let orderMarkerNode = SKLabelNode(fontNamed: "PingFangSC-Semibold")
+    private let marqueeBorderTop = SKSpriteNode(color: NSColor(calibratedRed: 1.0, green: 0.88, blue: 0.42, alpha: 0.85), size: .zero)
+    private let deploymentLineNode = SKSpriteNode(
+        color: NSColor(calibratedRed: 1.0, green: 0.84, blue: 0.28, alpha: 0.88),
+        size: .zero
+    )
+    private var buildGhostNode: SKSpriteNode?
+    private let orderMarkerNode = SKLabelNode(fontNamed: "PingFangSC-Heavy")
     private var orderMarkerFadeTimer: Double = 0.0
     private var heroAimReticleNode: SKSpriteNode?
 
@@ -382,12 +483,21 @@ public final class BattlefieldSKScene: SKScene {
     private var damageLabelCursor: Int = 0
 
     private var dragStartScenePoint: CGPoint?
+    private var rightDragStartScenePoint: CGPoint?
     private var isOptionPanningDrag = false
     private var pressedKeyCodes = Set<UInt16>()
     private var heroMouseLeftHeld = false
     private var heroMouseRightHeld = false
     private var heroAimLogicPoint: (x: Double, y: Double) = (0.0, 0.0)
+    private var mouseHoverScenePoint: CGPoint = .zero
     private var installedTrackingArea: NSTrackingArea?
+
+    /// 当前待选址落盘的 RTS 建筑种类（nil 表示正常选兵指挥模式）
+    public private(set) var pendingBuildKind: SiegeStructureKind? = nil
+    /// 模拟倍速（支持 0.5x 战术慢镜 / 1.0x 标准 / 1.5x / 2.0x 疾行）
+    public var simulationSpeedMultiplier: Double = 1.0 {
+        didSet { pushUiSyncNow() }
+    }
 
     // 缓存双方势力颜色
     private var factionPrimaryColors: [FactionId: NSColor] = [:]
@@ -399,22 +509,20 @@ public final class BattlefieldSKScene: SKScene {
     }
     public var enableFarLod: Bool = true
     public var invertScrollZoom: Bool = false
-    public var keyboardPanSpeed: Double = 520.0
+    public var keyboardPanSpeed: Double = 560.0
     public var showDamageNumbers: Bool = true
     public var enableEdgeCursorPan: Bool = false
 
-    /// 当前双视角操控状态（代理自 `engine.controlMode`）
     public var controlMode: BattleControlMode {
         engine.controlMode
     }
 
-    // 与 SwiftUI `BattlefieldView` 通信回调（全部 `@MainActor` 严格隔离）
     public var onInteractionFeedback: (@MainActor (String) -> Void)?
     public var onUiPacketSynced: (@MainActor (BattlefieldUiSyncPacket) -> Void)?
     public var onRequestToggleEscapeMenu: (@MainActor () -> Void)?
     public var onBattleConcluded: (@MainActor (PostBattleSettlementSummary) -> Void)?
 
-    // MARK: - 初始化（兼容骨架单测无参初始化与完整战局部署初始化）
+    // MARK: - 初始化
 
     public convenience init(isSiegeScenario: Bool = false) {
         let ctx = RouteLaunchContext(
@@ -433,7 +541,7 @@ public final class BattlefieldSKScene: SKScene {
         self.engine = sim
         self.worldWidth = sim.worldWidth
         self.worldHeight = sim.worldHeight
-        super.init(size: CGSize(width: 1280, height: 760))
+        super.init(size: CGSize(width: 1440, height: 860))
         self.scaleMode = .resizeFill
         self.backgroundColor = Self.groundBaseColor(for: context.terrain, weather: context.weather)
 
@@ -442,7 +550,6 @@ public final class BattlefieldSKScene: SKScene {
             factionAccentColors[cfg.id] = StickmanTextureAtlas.nsColor(hex: cfg.accentColorHex)
         }
 
-        // 预绑定 1~6 号军团编组并默认选中我方前锋主力，开场即可直接右键指挥！
         setupInitialSelectionAndControlGroups()
         lastObservedHeroVitalState = sim.playerHero.vitalState
         lastResourceIntAmounts = Array(repeating: -1, count: sim.resourceNodes.count)
@@ -456,7 +563,7 @@ public final class BattlefieldSKScene: SKScene {
 
     public override var acceptsFirstResponder: Bool { true }
 
-    // MARK: - 坐标系双向确定性映射（逻辑左上角 0,0 <-> SpriteKit 左下角 0,0）
+    // MARK: - 坐标系双向确定性映射
 
     public func scenePoint(fromLogicX logicX: Double, logicY: Double) -> CGPoint {
         CGPoint(x: logicX, y: worldHeight - logicY)
@@ -478,7 +585,7 @@ public final class BattlefieldSKScene: SKScene {
         )
     }
 
-    // MARK: - 场景挂载与对象池一次性预分配
+    // MARK: - 场景挂载与高精地貌/对象池一次性预分配
 
     public override func didMove(to view: SKView) {
         super.didMove(to: view)
@@ -498,15 +605,17 @@ public final class BattlefieldSKScene: SKScene {
         structureLayer.zPosition = 14
         squadOverlayLayer.zPosition = 18
         unitBatchLayer.zPosition = 24
-        projectileLayer.zPosition = 34
-        effectLayer.zPosition = 42
-        uiOverlayLayer.zPosition = 52
+        forestCanopyLayer.zPosition = 30
+        projectileLayer.zPosition = 36
+        effectLayer.zPosition = 44
+        uiOverlayLayer.zPosition = 54
 
         addChild(terrainLayer)
         addChild(corpseDecalLayer)
         addChild(structureLayer)
         addChild(squadOverlayLayer)
         addChild(unitBatchLayer)
+        addChild(forestCanopyLayer)
         addChild(projectileLayer)
         addChild(effectLayer)
         addChild(uiOverlayLayer)
@@ -518,28 +627,43 @@ public final class BattlefieldSKScene: SKScene {
         marqueeFillNode.isHidden = true
         marqueeFillNode.zPosition = 58
         uiOverlayLayer.addChild(marqueeFillNode)
+        marqueeBorderTop.isHidden = true
+        marqueeBorderTop.zPosition = 59
+        uiOverlayLayer.addChild(marqueeBorderTop)
+
+        deploymentLineNode.isHidden = true
+        deploymentLineNode.anchorPoint = CGPoint(x: 0.0, y: 0.5)
+        deploymentLineNode.zPosition = 60
+        uiOverlayLayer.addChild(deploymentLineNode)
+
+        let ghost = SKSpriteNode(texture: atlas.buildingTexture(for: .barracks), color: .systemGreen, size: CGSize(width: 118, height: 94))
+        ghost.alpha = 0.58
+        ghost.zPosition = 56
+        ghost.isHidden = true
+        uiOverlayLayer.addChild(ghost)
+        buildGhostNode = ghost
 
         orderMarkerNode.text = "⊕ 进军目标"
         orderMarkerNode.fontSize = 18
         orderMarkerNode.fontColor = NSColor(calibratedRed: 1.0, green: 0.86, blue: 0.32, alpha: 0.96)
         orderMarkerNode.isHidden = true
-        orderMarkerNode.zPosition = 59
+        orderMarkerNode.zPosition = 61
         uiOverlayLayer.addChild(orderMarkerNode)
 
-        let reticle = SKSpriteNode(texture: atlas.circleRing, color: NSColor.systemYellow.withAlphaComponent(0.82), size: CGSize(width: 24, height: 24))
+        let reticle = SKSpriteNode(texture: atlas.circleRing, color: NSColor.systemYellow.withAlphaComponent(0.88), size: CGSize(width: 28, height: 28))
         reticle.colorBlendFactor = 1.0
-        reticle.zPosition = 57
+        reticle.zPosition = 62
         reticle.isHidden = true
         uiOverlayLayer.addChild(reticle)
         heroAimReticleNode = reticle
 
-        // 初始镜头定位在我军前锋与中线交界处，一眼看见浩荡军阵开拔接战
         let pCamp = engine.baseCampCoordinates(for: .player)
-        worldCamera.position = scenePoint(fromLogicX: min(worldWidth * 0.5, pCamp.x + 920.0), logicY: worldHeight * 0.5)
-        worldCamera.setScale(1.18)
+        worldCamera.position = scenePoint(fromLogicX: min(worldWidth * 0.5, pCamp.x + 860.0), logicY: worldHeight * 0.5)
+        worldCamera.setScale(1.06)
         addChild(worldCamera)
         self.camera = worldCamera
 
+        BattleAudioEngine.shared.play(.warHorn, volumeScale: 0.72)
         syncAllVisualNodesWithEngine()
         pushUiSyncNow()
         focusResponder()
@@ -568,7 +692,7 @@ public final class BattlefieldSKScene: SKScene {
         view.window?.acceptsMouseMovedEvents = true
     }
 
-    // MARK: - 公开指挥与操控桥接 API（供 SwiftUI HUD 按钮与快捷键共用）
+    // MARK: - 公开指挥、RTS 营建、时代演进、铁匠锻造与小地图跳转 API
 
     private func setupInitialSelectionAndControlGroups() {
         var allCombatIds: [Int] = []
@@ -589,11 +713,127 @@ public final class BattlefieldSKScene: SKScene {
         }
     }
 
+    public func jumpCameraToNormalized(normX: Double, normY: Double) {
+        let lx = max(0.0, min(worldWidth, normX * worldWidth))
+        let ly = max(0.0, min(worldHeight, normY * worldHeight))
+        worldCamera.position = scenePoint(fromLogicX: lx, logicY: ly)
+        clampCameraPosition()
+        pushUiSyncNow()
+    }
+
+    public func focusIdleOrNearestSapper() {
+        if let pt = engine.findSapperForFocus(side: .player) {
+            worldCamera.position = scenePoint(fromLogicX: pt.x, logicY: pt.y)
+            clampCameraPosition()
+            onInteractionFeedback?(pt.isIdle ? "🔨 已聚焦空闲民夫：可指派营建兵营/农庄/箭塔，或右键矿脉采集！" : "⛏ 已聚焦前线劳作民夫")
+            BattleAudioEngine.shared.play(.uiClick)
+            pushUiSyncNow()
+        } else {
+            onInteractionFeedback?("当前场上暂无存活民夫，可在底部招募【辎重工兵】")
+        }
+    }
+
+    /// 启动建筑鼠标选址预览（若 `quickAutoPlace == true` 如按住 Shift 点击，则直接在主城周边空地一键落盘！）
+    public func beginOrAutoConstructBuilding(_ kind: SiegeStructureKind, quickAutoPlace: Bool = false) {
+        guard let cost = kind.buildCost else { return }
+        if engine.playerState.currentAge < kind.requiredAge {
+            onInteractionFeedback?("🔒 营建【\(kind.displayName)】需先在顶部演进至【\(kind.requiredAge.displayName)】！")
+            return
+        }
+        if engine.playerState.gold < cost.gold || engine.playerState.wood < cost.wood {
+            onInteractionFeedback?("资源不足：营建【\(kind.displayName)】需 金 \(cost.gold) / 木 \(cost.wood)")
+            return
+        }
+
+        if quickAutoPlace {
+            if let slot = engine.findAutoBuildLocation(side: .player, kind: kind),
+               engine.constructBuilding(side: .player, kind: kind, atX: slot.x, atY: slot.y) {
+                pendingBuildKind = nil
+                buildGhostNode?.isHidden = true
+                syncDynamicStructurePool()
+                onInteractionFeedback?("🏗 已在本阵规划营建【\(kind.displayName)】，民夫正赶赴工地夯土筑城！")
+                drainAndPlayAudioCues()
+                pushUiSyncNow()
+            } else {
+                onInteractionFeedback?("本阵周边暂无合适空地，请点击按钮后在战场地面手动左键选址")
+            }
+            return
+        }
+
+        if pendingBuildKind == kind {
+            cancelPendingBuildPlacement()
+            return
+        }
+        pendingBuildKind = kind
+        if let ghost = buildGhostNode {
+            let fp = kind.defaultFootprint
+            ghost.texture = StickmanTextureAtlas.shared.buildingTexture(for: kind)
+            ghost.size = CGSize(width: fp.width, height: fp.height)
+            ghost.isHidden = false
+        }
+        onInteractionFeedback?("📐 营建选址中：【\(kind.displayName)】—— 在己方半场绿框处【左键落盘】，【右键/Esc】取消（Shift+点击按钮可自动选址）")
+        BattleAudioEngine.shared.play(.uiClick)
+        pushUiSyncNow()
+    }
+
+    public func cancelPendingBuildPlacement() {
+        pendingBuildKind = nil
+        buildGhostNode?.isHidden = true
+        pushUiSyncNow()
+    }
+
+    public func triggerAgeAdvancement() {
+        if engine.startAgeAdvancement(side: .player) {
+            let targetName = engine.playerState.advancingToAge?.displayName ?? "新时代"
+            onInteractionFeedback?("🏛 主城号角吹响：正在演进至【\(targetName)】！")
+            drainAndPlayAudioCues()
+            pushUiSyncNow()
+        } else if engine.playerState.advancingToAge != nil {
+            onInteractionFeedback?("主城正在演进时代中，请稍候")
+        } else if let next = engine.playerState.currentAge.nextAge {
+            let c = next.advanceCost
+            onInteractionFeedback?("演进至【\(next.displayName)】资源不足（需 金\(c.gold) / 木\(c.wood) / 粮\(c.grain)）")
+        } else {
+            onInteractionFeedback?("已达最高【传世霸业时代 IV】！")
+        }
+    }
+
+    public func triggerBlacksmithUpgrade(_ track: BlacksmithUpgradeTrack) {
+        let hasSmith = engine.structures.contains { !$0.isDestroyed && !$0.isUnderConstruction && $0.side == .player && $0.kind == .blacksmith }
+        guard hasSmith else {
+            onInteractionFeedback?("⚒ 请先在左下角营建一座【军械铁匠铺】，完工后即可锻造全军锋刃、重甲与羽箭！")
+            return
+        }
+        if engine.upgradeBlacksmithTrack(side: .player, track: track) {
+            let lvl: Int = {
+                switch track {
+                case .meleeForging: return engine.playerState.meleeForgeLevel
+                case .armorTempering: return engine.playerState.armorTemperLevel
+                case .fletchingcraft: return engine.playerState.fletchingLevel
+                }
+            }()
+            onInteractionFeedback?("🔥 铁匠铺炉火冲霄：【\(track.displayName) Lv.\(lvl)】锻造完成（\(track.summary(atLevel: lvl))）！")
+            drainAndPlayAudioCues()
+            pushUiSyncNow()
+        } else {
+            onInteractionFeedback?("无法升级【\(track.displayName)】：请检查金木粮储量或是否需更高时代（Lv.2需时代II，Lv.3需时代III）")
+        }
+    }
+
+    public func cancelQueueItem(at index: Int) {
+        if engine.cancelTrainingQueueItem(side: .player, at: index) {
+            onInteractionFeedback?("已取消队列训练并全额退还军费粮饷")
+            BattleAudioEngine.shared.play(.uiClick)
+            pushUiSyncNow()
+        }
+    }
+
     public func selectAllCombatSquads() {
         selectedSquadIds = engine.squads
             .filter { $0.side == .player && $0.aliveCount > 0 && !$0.isRouting && $0.corpsRole != .supplyEscort }
             .map(\.id)
         onInteractionFeedback?("已全选我方场上主力作战编队（共 \(selectedSquadIds.count) 支军团）")
+        BattleAudioEngine.shared.play(.uiClick)
         pushUiSyncNow()
     }
 
@@ -608,6 +848,7 @@ public final class BattlefieldSKScene: SKScene {
         }
         let uName = UnitConfig.stats(for: engine.squads[squadId].primaryUnitType)?.name ?? "编队"
         onInteractionFeedback?("已选定【\(uName)】（存活 \(engine.squads[squadId].aliveCount) · 士气 \(Int(engine.squads[squadId].morale))）")
+        BattleAudioEngine.shared.play(.uiClick)
         pushUiSyncNow()
     }
 
@@ -618,7 +859,8 @@ public final class BattlefieldSKScene: SKScene {
             return
         }
         engine.issueSquadCommand(SquadCommandRequest(squadIds: targets, formation: formation))
-        onInteractionFeedback?("已命 \(targets.count) 支编队变阵为【\(formation.displayName)】")
+        onInteractionFeedback?("🛡 已命 \(targets.count) 支编队变阵为【\(formation.displayName)】（\(formation.tacticalBrief)）")
+        drainAndPlayAudioCues()
         pushUiSyncNow()
     }
 
@@ -631,7 +873,6 @@ public final class BattlefieldSKScene: SKScene {
         var targetX: Double? = nil
         var targetY: Double? = nil
         if order == .advance || order == .allOutCharge || order == .flank || order == .pincerEncircle {
-            // 若玩家直接按指令快捷键，自动指向最近敌军主力质心发起推进/包抄/合围！
             if let enemySq = engine.squads.first(where: { $0.side == .enemy && $0.aliveCount > 0 }) {
                 targetX = enemySq.anchorX
                 targetY = enemySq.anchorY
@@ -653,7 +894,8 @@ public final class BattlefieldSKScene: SKScene {
                 targetWorldY: targetY
             )
         )
-        onInteractionFeedback?("已向 \(targets.count) 支编队下达【\(order.displayName)】军令！")
+        onInteractionFeedback?("⚔️ 已向 \(targets.count) 支编队下达【\(order.displayName)】军令！")
+        drainAndPlayAudioCues()
         pushUiSyncNow()
     }
 
@@ -661,9 +903,10 @@ public final class BattlefieldSKScene: SKScene {
         engine.setPaused(!engine.isPaused)
         onInteractionFeedback?(
             engine.isPaused
-                ? "⏸ 战术暂停中：可继续框选多线编队预下达包抄与变阵军令"
-                : "▶️ 战鼓重鸣：全军恢复实时厮杀"
+                ? "⏸ 战术暂停中：可自由营建、框选多路军团、右键拖拽拉设战线与变阵"
+                : "▶️ 战鼓重鸣：全军恢复实时交锋"
         )
+        BattleAudioEngine.shared.play(.drumMarch, volumeScale: 0.65)
         pushUiSyncNow()
     }
 
@@ -674,10 +917,11 @@ public final class BattlefieldSKScene: SKScene {
 
     public func toggleGarrisonBell() {
         engine.toggleGarrisonBell()
+        BattleAudioEngine.shared.play(engine.playerState.garrisonBellActive ? .defeatBell : .drumMarch, volumeScale: 0.6)
         onInteractionFeedback?(
             engine.playerState.garrisonBellActive
-                ? "🔔 本阵警钟已鸣响：野外辎重工兵紧急退入大营箭孔协防！"
-                : "本阵警钟已解除：辎重工兵出营恢复采金伐木抢粮"
+                ? "🔔 主城警戒钟鸣响：野外民夫紧急退入主城射击孔放箭协防！"
+                : "🔔 警戒钟已解除：民夫出城恢复采矿、伐木、收粮与筑城"
         )
         pushUiSyncNow()
     }
@@ -698,19 +942,21 @@ public final class BattlefieldSKScene: SKScene {
         }
         let switched = engine.toggleControlMode()
         if switched {
+            cancelPendingBuildPlacement()
             pressedKeyCodes.removeAll()
             heroMouseLeftHeld = false
             heroMouseRightHeld = false
             engine.updateHeroInput(HeroControlInputState())
+            BattleAudioEngine.shared.play(.warHorn, volumeScale: 0.70)
             if engine.controlMode == .heroAction {
                 worldCamera.position = scenePoint(fromLogicX: engine.playerHero.x, logicY: engine.playerHero.y)
-                worldCamera.setScale(max(0.76, min(0.98, worldCamera.xScale)))
+                worldCamera.setScale(max(0.72, min(0.92, worldCamera.xScale)))
                 clampCameraPosition()
-                onInteractionFeedback?("⚔️ 主帅提刀上阵！[WASD/方向键] 走位 · 鼠标瞄准 · 左键劈刺/蓄射 · 右键举盾0.25s弹反 · [Space/E/R] 战技")
+                onInteractionFeedback?("⚔️ 主帅提刀亲征！[WASD] 走位 · 鼠标瞄准 · 左键劈刺/蓄射 · 右键举盾0.25s精准弹反 · [Space/E/R] 战技")
             } else {
-                worldCamera.setScale(max(1.08, worldCamera.xScale))
+                worldCamera.setScale(max(1.04, worldCamera.xScale))
                 clampCameraPosition()
-                onInteractionFeedback?("🗺 已切回 RTS 统帅全局视角：左键框选 · 右键机动/集火 · [1~4] 阵型 · [QWERF/GZXC] 奇正战术")
+                onInteractionFeedback?("🗺 已切回 RTS 帝国统帅视角：左键框选 · 右键拖拽拉设阵线 · 左下营建基地与升级铁匠科技")
             }
             pushUiSyncNow()
         }
@@ -719,7 +965,8 @@ public final class BattlefieldSKScene: SKScene {
 
     public func switchHeroWeapon(_ weapon: HeroWeaponType) {
         engine.switchHeroWeapon(weapon)
-        onInteractionFeedback?("主帅切换兵刃：【\(weapon.displayName)】")
+        BattleAudioEngine.shared.play(.swordClash, volumeScale: 0.55)
+        onInteractionFeedback?("主帅切换随身兵刃：【\(weapon.displayName)】")
         pushUiSyncNow()
     }
 
@@ -729,11 +976,12 @@ public final class BattlefieldSKScene: SKScene {
             let title: String = {
                 switch skill {
                 case .breakthroughCharge: return "【破阵突击】猛冲撞阵！"
-                case .ironBulwark: return "【铁壁横戈】2.0s 弹反箭雨并蓄势横扫！"
+                case .ironBulwark: return "【铁壁横戈】2.0s 招架箭雨并蓄势横扫！"
                 case .grandWarCry: return "【三军战吼】友军士气 +18，溃军重整归建！"
                 }
             }()
-            onInteractionFeedback?("🔥 主帅施放战技：\(title)")
+            onInteractionFeedback?("🔥 主帅施放绝技：\(title)")
+            drainAndPlayAudioCues()
             pushUiSyncNow()
         } else {
             let cd = engine.playerHero.cooldownRemaining(for: skill)
@@ -741,7 +989,7 @@ public final class BattlefieldSKScene: SKScene {
         }
     }
 
-    public func recruitReinforcement(unitType: UnitTypeId, useMercenaryGold: Bool = false) {
+    public func recruitReinforcement(unitType: UnitTypeId, useMercenaryGold: Bool = false, batchCount: Int = 1) {
         let role: ArmyCorpsRole = {
             guard let st = UnitConfig.stats(for: unitType) else { return .rearReserve }
             switch st.category {
@@ -751,19 +999,24 @@ public final class BattlefieldSKScene: SKScene {
             case .infantry, .polearm, .shock: return .vanguardCenter
             }
         }()
-        let ok = useMercenaryGold
-            ? engine.recruitMercenaryUnit(side: .player, unitType: unitType, corpsRole: role)
-            : engine.recruitUnit(side: .player, unitType: unitType, corpsRole: role)
+        var recruitedCount = 0
+        for _ in 0..<max(1, batchCount) {
+            let ok = useMercenaryGold
+                ? engine.recruitMercenaryUnit(side: .player, unitType: unitType, corpsRole: role)
+                : engine.recruitUnit(side: .player, unitType: unitType, corpsRole: role)
+            if ok { recruitedCount += 1 } else { break }
+        }
         let uName = UnitConfig.stats(for: unitType)?.name ?? unitType.rawValue
-        if ok {
+        if recruitedCount > 0 {
+            BattleAudioEngine.shared.play(.uiClick)
             onInteractionFeedback?(
                 useMercenaryGold
-                    ? "💰 商盟黄金契约生效：【\(uName)】已即时投入本阵前线！"
-                    : "本阵开始训练增援【\(uName)】（队列 \(engine.playerState.trainingQueue.count)）"
+                    ? "💰 商盟黄金契约生效：×\(recruitedCount)【\(uName)】已即时投入前线！"
+                    : "已下令训练 ×\(recruitedCount)【\(uName)】（队列共 \(engine.playerState.trainingQueue.count) 项，建军营/靶场/马厩可大幅提速）"
             )
             pushUiSyncNow()
         } else {
-            onInteractionFeedback?("无法招募【\(uName)】：请检查金木粮储量、人口上限或本阵状态")
+            onInteractionFeedback?("无法招募【\(uName)】：请检查金木粮储量，或营建【军屯民居】提升人口上限")
         }
     }
 
@@ -782,6 +1035,7 @@ public final class BattlefieldSKScene: SKScene {
         }
         if engine.deployFieldTrap(side: .player, kind: kind, x: anchorX, y: anchorY) {
             syncTrapVisualPool()
+            BattleAudioEngine.shared.play(.buildHammer, volumeScale: 0.65)
             onInteractionFeedback?("🌲 雾林奇谋：已在前沿秘密布设【\(kind == .tripwire ? "绊马索" : "尖刺陷坑")】（耗木 25）")
             pushUiSyncNow()
         } else {
@@ -814,7 +1068,7 @@ public final class BattlefieldSKScene: SKScene {
             .map(\.id)
     }
 
-    // MARK: - 30Hz 确定性模拟驱动与 60FPS 视口裁剪合批渲染主循环
+    // MARK: - 30Hz 确定性模拟驱动（支持 0.5x~2.0x 倍速）与 60FPS 视口裁剪合批渲染主循环
 
     public override func update(_ currentTime: TimeInterval) {
         super.update(currentTime)
@@ -825,8 +1079,8 @@ public final class BattlefieldSKScene: SKScene {
         let rawDt = max(0.0, min(0.08, currentTime - lastUpdateTimestamp))
         lastUpdateTimestamp = currentTime
 
-        // 处理相机平滑键盘/边缘平移与英雄视角跟随
         updateCameraAndHeroInput(frameDt: rawDt)
+        animateEnvironmentRipplesAndWeather(frameDt: rawDt, now: currentTime)
 
         if orderMarkerFadeTimer > 0.0 {
             orderMarkerFadeTimer -= rawDt
@@ -835,22 +1089,22 @@ public final class BattlefieldSKScene: SKScene {
             }
         }
 
-        // 固定步长 30Hz 推进确定性战斗核心
         let fixedStep = 1.0 / Double(GameConstants.logicTickHz)
         if !engine.isPaused && engine.outcome == .ongoing {
-            fixedTickAccumulator += rawDt
+            fixedTickAccumulator += rawDt * max(0.25, min(2.5, simulationSpeedMultiplier))
             var subSteps = 0
-            while fixedTickAccumulator >= fixedStep && subSteps < 3 && engine.outcome == .ongoing {
+            while fixedTickAccumulator >= fixedStep && subSteps < 6 && engine.outcome == .ongoing {
                 engine.stepLogicTick(deltaTime: fixedStep)
                 fixedTickAccumulator -= fixedStep
                 subSteps += 1
             }
-            if subSteps == 3 {
+            if subSteps == 6 {
                 fixedTickAccumulator = 0.0
             }
         }
 
-        // 检测主帅首次重伤落马自动退回 RTS 视角及医帐包扎复出过渡（DESIGN.md 10.2）
+        drainAndPlayAudioCues()
+
         let currentVital = engine.playerHero.vitalState
         if currentVital != lastObservedHeroVitalState {
             lastObservedHeroVitalState = currentVital
@@ -858,27 +1112,26 @@ public final class BattlefieldSKScene: SKScene {
                 heroMouseLeftHeld = false
                 heroMouseRightHeld = false
                 pressedKeyCodes.removeAll()
-                worldCamera.setScale(max(1.15, worldCamera.xScale))
+                worldCamera.setScale(max(1.12, worldCamera.xScale))
                 clampCameraPosition()
-                onInteractionFeedback?("⚠️ 帅旗倾倒！主帅重伤退入本阵医帐包扎 45s（全军士气 -35·上限锁 65），已自动拉回 RTS 上帝视角调度残军！")
+                BattleAudioEngine.shared.play(.defeatBell, volumeScale: 0.7)
+                onInteractionFeedback?("⚠️ 帅旗倾倒！主帅重伤退入主城医帐包扎 45s（全军士气 -35·上限锁 65），已自动拉回 RTS 视角！")
                 pushUiSyncNow()
             } else if currentVital == .woundedWeakened {
-                onInteractionFeedback?("🔥 主帅包扎完毕重返战场（35% 残血·重创虚弱态，失去二次免死保护），可按 [Tab] 再度披挂上阵！")
+                BattleAudioEngine.shared.play(.warHorn, volumeScale: 0.7)
+                onInteractionFeedback?("🔥 主帅包扎完毕重返沙场（重创虚弱态），可按 [Tab] 再度披挂上阵！")
                 pushUiSyncNow()
             }
         }
 
-        // 自动剔除已全灭的选中编队 ID，避免框选残留空壳分队
         if !selectedSquadIds.isEmpty {
             selectedSquadIds.removeAll { id in
                 id < 0 || id >= engine.squads.count || engine.squads[id].aliveCount <= 0
             }
         }
 
-        // 同步全部预分配渲染池节点姿态（含视口裁剪与远景 LOD）
         syncAllVisualNodesWithEngine()
 
-        // 4Hz 节流同步给 SwiftUI 顶部与底部战术面板
         uiPushAccumulator += rawDt
         if uiPushAccumulator >= 0.25 {
             uiPushAccumulator = 0.0
@@ -887,14 +1140,38 @@ public final class BattlefieldSKScene: SKScene {
 
         if engine.outcome != .ongoing && !outcomeNotified {
             outcomeNotified = true
-            pushUiSyncNow()
             let summary = engine.buildPostBattleSummary()
+            BattleAudioEngine.shared.play(summary.isVictory ? .victoryFanfare : .defeatBell, volumeScale: 0.90)
+            pushUiSyncNow()
             onBattleConcluded?(summary)
         }
     }
 
+    private func drainAndPlayAudioCues() {
+        let cues = engine.drainPendingSoundCues()
+        for cue in cues {
+            BattleAudioEngine.shared.play(cue)
+        }
+    }
+
+    private func animateEnvironmentRipplesAndWeather(frameDt: Double, now: TimeInterval) {
+        for (idx, rip) in waterRippleNodes.enumerated() {
+            rip.alpha = 0.20 + 0.16 * CGFloat(sin(now * 2.4 + Double(idx) * 0.9))
+            rip.position.x += CGFloat(sin(now * 1.5 + Double(idx))) * 0.15
+        }
+        guard !weatherParticleNodes.isEmpty else { return }
+        let camRect = currentVisibleSceneRect(margin: 80)
+        for p in weatherParticleNodes {
+            p.position.y -= CGFloat(260.0 * frameDt)
+            p.position.x -= CGFloat(65.0 * frameDt)
+            if p.position.y < camRect.minY {
+                p.position.y = camRect.maxY
+                p.position.x = CGFloat.random(in: camRect.minX...max(camRect.minX + 10, camRect.maxX))
+            }
+        }
+    }
+
     private func updateCameraAndHeroInput(frameDt: Double) {
-        // 若窗口失去焦点（如 Cmd+Tab 切出应用），立即清空按键与鼠标长按状态防止粘连卡键
         if let win = self.view?.window, !win.isKeyWindow {
             if !pressedKeyCodes.isEmpty || heroMouseLeftHeld || heroMouseRightHeld {
                 pressedKeyCodes.removeAll()
@@ -905,23 +1182,31 @@ public final class BattlefieldSKScene: SKScene {
             return
         }
 
-        if engine.controlMode == .heroAction {
-            // 实时从窗口光标反算世界坐标，确保按住 WASD 跑动时鼠标准星始终精确锁定屏幕光标位置
-            if let view = self.view, let win = view.window {
-                let winMouse = win.mouseLocationOutsideOfEventStream
-                let viewPt = view.convert(winMouse, from: nil)
-                if view.bounds.contains(viewPt) {
-                    let scenePt = convertPoint(fromView: viewPt)
-                    heroAimLogicPoint = logicCoordinates(fromScenePoint: scenePt)
+        if let view = self.view, let win = view.window {
+            let winMouse = win.mouseLocationOutsideOfEventStream
+            let viewPt = view.convert(winMouse, from: nil)
+            if view.bounds.contains(viewPt) {
+                let scenePt = convertPoint(fromView: viewPt)
+                mouseHoverScenePoint = scenePt
+                if let kind = pendingBuildKind, let ghost = buildGhostNode {
+                    ghost.position = scenePt
+                    let lPt = logicCoordinates(fromScenePoint: scenePt)
+                    let valid = engine.canPlaceBuilding(side: .player, kind: kind, atX: lPt.x, atY: lPt.y)
+                    ghost.color = valid ? .systemGreen : .systemRed
+                    ghost.colorBlendFactor = 0.65
                 }
             }
+        }
+
+        if engine.controlMode == .heroAction {
+            heroAimLogicPoint = logicCoordinates(fromScenePoint: mouseHoverScenePoint)
 
             var moveX = 0.0
             var moveY = 0.0
-            if pressedKeyCodes.contains(0) || pressedKeyCodes.contains(123) { moveX -= 1.0 } // A / Left
-            if pressedKeyCodes.contains(2) || pressedKeyCodes.contains(124) { moveX += 1.0 } // D / Right
-            if pressedKeyCodes.contains(13) || pressedKeyCodes.contains(126) { moveY -= 1.0 } // W / Up -> 北 (logicY 减小)
-            if pressedKeyCodes.contains(1) || pressedKeyCodes.contains(125) { moveY += 1.0 } // S / Down -> 南 (logicY 增大)
+            if pressedKeyCodes.contains(0) || pressedKeyCodes.contains(123) { moveX -= 1.0 }
+            if pressedKeyCodes.contains(2) || pressedKeyCodes.contains(124) { moveX += 1.0 }
+            if pressedKeyCodes.contains(13) || pressedKeyCodes.contains(126) { moveY -= 1.0 }
+            if pressedKeyCodes.contains(1) || pressedKeyCodes.contains(125) { moveY += 1.0 }
 
             engine.updateHeroInput(
                 HeroControlInputState(
@@ -934,7 +1219,6 @@ public final class BattlefieldSKScene: SKScene {
                 )
             )
 
-            // 英雄模式下相机平滑追踪主帅（叠加轻微准星前瞻与重击震屏）
             let heroScenePt = scenePoint(fromLogicX: engine.playerHero.x, logicY: engine.playerHero.y)
             let aimScenePt = scenePoint(fromLogicX: heroAimLogicPoint.x, logicY: heroAimLogicPoint.y)
             let lookAheadX = max(-95.0, min(95.0, (aimScenePt.x - heroScenePt.x) * 0.16))
@@ -946,7 +1230,7 @@ public final class BattlefieldSKScene: SKScene {
             worldCamera.position.y += (targetCamY - worldCamera.position.y) * lerpFactor
 
             if engine.cameraShakeIntensity > 0.02 {
-                let amp = CGFloat(engine.cameraShakeIntensity * 7.0)
+                let amp = CGFloat(engine.cameraShakeIntensity * 7.5)
                 worldCamera.position.x += CGFloat.random(in: -amp...amp)
                 worldCamera.position.y += CGFloat.random(in: -amp...amp)
             }
@@ -966,7 +1250,6 @@ public final class BattlefieldSKScene: SKScene {
             if pressedKeyCodes.contains(126) { dy += panVel }
             if pressedKeyCodes.contains(125) { dy -= panVel }
 
-            // 可选屏幕边缘光标推镜
             if enableEdgeCursorPan, let view = self.view, let win = view.window, win.isKeyWindow {
                 let vPt = view.convert(win.mouseLocationOutsideOfEventStream, from: nil)
                 let margin: CGFloat = 24.0
@@ -998,15 +1281,42 @@ public final class BattlefieldSKScene: SKScene {
                     isRouting: sq.isRouting,
                     formation: sq.formation,
                     order: sq.order,
-                    encirclement: sq.encirclementState
+                    encirclement: sq.encirclementState,
+                    veterancyStars: sq.veterancyStars,
+                    totalKills: sq.totalKills
                 )
             }
+
+        var radarDots: [MinimapRadarDot] = []
+        radarDots.reserveCapacity(64)
+        var dotId = 0
+        for res in engine.resourceNodes where res.remainingAmount > 0 {
+            radarDots.append(MinimapRadarDot(id: dotId, normX: res.x / worldWidth, normY: res.y / worldHeight, isPlayer: false, isBuilding: false, isResource: true))
+            dotId += 1
+        }
+        for st in engine.structures where !st.isDestroyed && st.kind != .wallSegment && st.kind != .woodenCheval {
+            radarDots.append(MinimapRadarDot(id: dotId, normX: st.x / worldWidth, normY: st.y / worldHeight, isPlayer: st.side == .player, isBuilding: true, isResource: false))
+            dotId += 1
+        }
+        for sq in engine.squads where sq.aliveCount > 0 {
+            if sq.side == .enemy && sq.id < enemySquadVisibleFlags.count && !enemySquadVisibleFlags[sq.id] {
+                continue
+            }
+            radarDots.append(MinimapRadarDot(id: dotId, normX: sq.anchorX / worldWidth, normY: sq.anchorY / worldHeight, isPlayer: sq.side == .player, isBuilding: false, isResource: false))
+            dotId += 1
+        }
+
+        let camLogic = logicCoordinates(fromScenePoint: worldCamera.position)
+        let visW = min(1.0, Double(size.width * worldCamera.xScale) / worldWidth)
+        let visH = min(1.0, Double(size.height * worldCamera.yScale) / worldHeight)
+
         let hero = engine.playerHero
         let packet = BattlefieldUiSyncPacket(
             hud: engine.latestHudSnapshot,
             playerSquads: briefs,
             selectedSquadIds: selectedSquadIds,
             trainingQueueCount: engine.playerState.trainingQueue.count,
+            trainingQueueItems: engine.playerState.trainingQueue,
             aiDoctrine: engine.aiBlackboard.activeDoctrine,
             aiSiegePhase: engine.aiBlackboard.siegePhase,
             heroBreakthroughCd: hero.breakthroughCooldown,
@@ -1015,164 +1325,194 @@ public final class BattlefieldSKScene: SKScene {
             heroMedicalRemainingSec: hero.medicalRecoveryRemainingSec,
             heroBowChargeRatio: min(1.0, hero.bowChargeElapsed / 0.90),
             heroKills: hero.killsCount,
-            bloodMoonFervorRemaining: engine.playerState.bloodMoonFervorRemainingSec
+            bloodMoonFervorRemaining: engine.playerState.bloodMoonFervorRemainingSec,
+            simulationSpeed: simulationSpeedMultiplier,
+            pendingBuildKind: pendingBuildKind,
+            minimapDots: radarDots,
+            cameraNormCenterX: max(0.0, min(1.0, camLogic.x / worldWidth)),
+            cameraNormCenterY: max(0.0, min(1.0, camLogic.y / worldHeight)),
+            cameraNormWidth: visW,
+            cameraNormHeight: visH
         )
         onUiPacketSynced?(packet)
     }
 
-    // MARK: - 战场地形带、功能地形区、野外资源点与预分配节点池初始化
+    // MARK: - 战场精美自然地貌、古罗马石道、松林、石桥与矿脉麦田绘制
 
     private static func groundBaseColor(for terrain: TerrainType, weather: WeatherType) -> NSColor {
         var base: (r: CGFloat, g: CGFloat, b: CGFloat) = {
             switch terrain {
-            case .plain: return (0.17, 0.16, 0.12)
-            case .highGround: return (0.19, 0.17, 0.14)
-            case .riverFord, .bridgePass: return (0.15, 0.17, 0.15)
-            case .denseForest: return (0.12, 0.18, 0.13)
-            case .desertDune: return (0.26, 0.21, 0.13)
-            case .snowfield: return (0.24, 0.27, 0.30)
-            case .fortWall: return (0.17, 0.16, 0.15)
+            case .plain: return (0.20, 0.25, 0.14)
+            case .highGround: return (0.24, 0.23, 0.17)
+            case .riverFord, .bridgePass: return (0.18, 0.25, 0.16)
+            case .denseForest: return (0.14, 0.23, 0.14)
+            case .desertDune: return (0.42, 0.33, 0.19)
+            case .snowfield: return (0.62, 0.68, 0.74)
+            case .fortWall: return (0.22, 0.22, 0.18)
             }
         }()
         if weather == .night {
-            base.r *= 0.58; base.g *= 0.62; base.b *= 0.78
+            base.r *= 0.48; base.g *= 0.54; base.b *= 0.74
         } else if weather == .rainMud {
-            base.r *= 0.78; base.g *= 0.80; base.b *= 0.85
+            base.r *= 0.75; base.g *= 0.78; base.b *= 0.84
         }
         return NSColor(calibratedRed: base.r, green: base.g, blue: base.b, alpha: 1.0)
     }
 
     private func buildBattlefieldTerrainAndResourceVisuals(atlas: StickmanTextureAtlas) {
+        let baseCol = Self.groundBaseColor(for: engine.context.terrain, weather: engine.context.weather)
         let baseGround = SKSpriteNode(
             texture: atlas.whitePixel,
-            color: Self.groundBaseColor(for: engine.context.terrain, weather: engine.context.weather),
+            color: baseCol,
             size: CGSize(width: worldWidth, height: worldHeight)
         )
         baseGround.colorBlendFactor = 1.0
         baseGround.position = CGPoint(x: worldWidth * 0.5, y: worldHeight * 0.5)
         terrainLayer.addChild(baseGround)
 
-        // 三路走廊微底色标识
-        addCorridorBand(atlas: atlas, logicMinY: 150, logicMaxY: 680, color: NSColor(calibratedRed: 0.13, green: 0.21, blue: 0.14, alpha: 0.30), title: "北翼迂回走廊 · 密林设伏与轻骑绕后道")
-        addCorridorBand(atlas: atlas, logicMinY: 680, logicMaxY: 1720, color: NSColor(calibratedRed: 0.23, green: 0.20, blue: 0.15, alpha: 0.22), title: "中路主决战区 · 百人方阵正面交锋线")
-        addCorridorBand(atlas: atlas, logicMinY: 1720, logicMaxY: 2250, color: NSColor(calibratedRed: 0.24, green: 0.20, blue: 0.12, alpha: 0.30), title: "南翼补给走廊 · 农庄抢粮与大回环包抄道")
+        // 铺设有机草甸/砂石肌理斑块，彻底消除死板纯色底板
+        let patchColor = baseCol.blended(withFraction: 0.25, of: .white) ?? baseCol
+        for gx in stride(from: 180.0, through: worldWidth - 180.0, by: 310.0) {
+            for gy in stride(from: 160.0, through: worldHeight - 160.0, by: 290.0) {
+                let jitterX = Double((Int(gx * 7 + gy * 3) % 90) - 45)
+                let jitterY = Double((Int(gx * 5 + gy * 11) % 80) - 40)
+                let patch = SKSpriteNode(texture: atlas.terrainNoisePatch, color: patchColor, size: CGSize(width: 260, height: 220))
+                patch.colorBlendFactor = 0.85
+                patch.alpha = 0.48
+                patch.position = scenePoint(fromLogicX: gx + jitterX, logicY: gy + jitterY)
+                terrainLayer.addChild(patch)
+            }
+        }
 
-        // 绘制 `engine.terrainZones` 真实物理地形功能区（浅滩、石桥、高地山脊、密林暗道、城墙带）
+        // 贯通两军主城的中路古罗马军用石板大道与南北侧翼驿道
+        let pCamp = engine.baseCampCoordinates(for: .player)
+        let eCamp = engine.baseCampCoordinates(for: .enemy)
+        for rx in stride(from: pCamp.x + 80.0, through: eCamp.x - 80.0, by: 152.0) {
+            let mainRoad = SKSpriteNode(texture: atlas.cobbleRoadTile, size: CGSize(width: 158, height: 52))
+            mainRoad.alpha = 0.72
+            mainRoad.position = scenePoint(fromLogicX: rx, logicY: worldHeight * 0.5)
+            terrainLayer.addChild(mainRoad)
+        }
+
+        // 绘制真实物理地形功能区（碧波河流、石拱桥、悬崖高地、层叠松林）
+        waterRippleNodes.removeAll()
         for zone in engine.terrainZones {
             let w = zone.maxX - zone.minX
             let h = zone.maxY - zone.minY
             let center = scenePoint(fromLogicX: (zone.minX + zone.maxX) * 0.5, logicY: (zone.minY + zone.maxY) * 0.5)
-            let (zColor, zName): (NSColor, String) = {
-                switch zone.terrain {
-                case .riverFord:
-                    return (NSColor(calibratedRed: 0.12, green: 0.38, blue: 0.56, alpha: 0.52), "河流浅滩（涉水减速·半渡而击易伤+20%）")
-                case .bridgePass:
-                    return (NSColor(calibratedRed: 0.42, green: 0.39, blue: 0.35, alpha: 0.72), "石桥咽喉（免除合围）")
-                case .highGround:
-                    return (NSColor(calibratedRed: 0.34, green: 0.29, blue: 0.21, alpha: 0.46), "制高点高地（射程+20%·居高近战+12%）")
-                case .denseForest:
-                    return (NSColor(calibratedRed: 0.11, green: 0.30, blue: 0.15, alpha: 0.50), "迷雾密林（伏兵隐匿·禁骑冲锋）")
-                case .fortWall:
-                    return (NSColor(calibratedRed: 0.32, green: 0.31, blue: 0.33, alpha: 0.58), "雄关城防带")
-                default:
-                    return (NSColor(calibratedWhite: 0.3, alpha: 0.2), zone.terrain.displayName)
-                }
-            }()
-            let rectNode = SKSpriteNode(texture: atlas.whitePixel, color: zColor, size: CGSize(width: w, height: h))
-            rectNode.colorBlendFactor = 1.0
-            rectNode.position = center
-            terrainLayer.addChild(rectNode)
 
-            let tag = SKLabelNode(fontNamed: "PingFangSC-Regular")
-            tag.text = zName
-            tag.fontSize = 14
-            tag.fontColor = NSColor(calibratedWhite: 0.90, alpha: 0.58)
-            tag.position = CGPoint(x: center.x, y: center.y - 5)
-            terrainLayer.addChild(tag)
+            switch zone.terrain {
+            case .riverFord:
+                let bank = SKSpriteNode(texture: atlas.whitePixel, color: NSColor(calibratedRed: 0.54, green: 0.46, blue: 0.32, alpha: 0.65), size: CGSize(width: w + 26, height: h + 16))
+                bank.colorBlendFactor = 1.0
+                bank.position = center
+                terrainLayer.addChild(bank)
+
+                let water = SKSpriteNode(texture: atlas.whitePixel, color: NSColor(calibratedRed: 0.12, green: 0.44, blue: 0.64, alpha: 0.84), size: CGSize(width: w, height: h))
+                water.colorBlendFactor = 1.0
+                water.position = center
+                terrainLayer.addChild(water)
+
+                for ry in stride(from: zone.minY + 35.0, through: zone.maxY - 35.0, by: 62.0) {
+                    let ripple = SKSpriteNode(texture: atlas.whitePixel, color: NSColor(calibratedWhite: 0.96, alpha: 0.30), size: CGSize(width: w * 0.55, height: 3.5))
+                    ripple.colorBlendFactor = 1.0
+                    ripple.position = scenePoint(fromLogicX: (zone.minX + zone.maxX) * 0.5, logicY: ry)
+                    terrainLayer.addChild(ripple)
+                    waterRippleNodes.append(ripple)
+                }
+
+            case .bridgePass:
+                let bridge = SKSpriteNode(texture: atlas.stoneBridgeSprite, size: CGSize(width: w + 16, height: h + 12))
+                bridge.position = center
+                terrainLayer.addChild(bridge)
+
+            case .highGround:
+                let plateau = SKSpriteNode(texture: atlas.whitePixel, color: NSColor(calibratedRed: 0.38, green: 0.34, blue: 0.25, alpha: 0.55), size: CGSize(width: w, height: h))
+                plateau.colorBlendFactor = 1.0
+                plateau.position = center
+                terrainLayer.addChild(plateau)
+                for rx in stride(from: zone.minX + 55.0, through: zone.maxX - 55.0, by: 110.0) {
+                    let ridge = SKSpriteNode(texture: atlas.cliffRockSprite, size: CGSize(width: 112, height: 52))
+                    ridge.position = scenePoint(fromLogicX: rx, logicY: zone.maxY - 12.0)
+                    terrainLayer.addChild(ridge)
+                }
+
+            case .denseForest:
+                let floorShade = SKSpriteNode(texture: atlas.whitePixel, color: NSColor(calibratedRed: 0.08, green: 0.20, blue: 0.10, alpha: 0.48), size: CGSize(width: w, height: h))
+                floorShade.colorBlendFactor = 1.0
+                floorShade.position = center
+                terrainLayer.addChild(floorShade)
+                // 在树冠层散布苍翠松树群落（半透明树冠不遮挡林下潜伏伏兵操控！）
+                for tx in stride(from: zone.minX + 42.0, through: zone.maxX - 42.0, by: 86.0) {
+                    for ty in stride(from: zone.minY + 42.0, through: zone.maxY - 42.0, by: 84.0) {
+                        let ox = Double((Int(tx * 3 + ty * 7) % 28) - 14)
+                        let oy = Double((Int(tx * 5 + ty * 3) % 28) - 14)
+                        let tree = SKSpriteNode(texture: atlas.pineTreeCanopy, size: CGSize(width: 66, height: 66))
+                        tree.alpha = 0.78
+                        tree.position = scenePoint(fromLogicX: tx + ox, logicY: ty + oy)
+                        forestCanopyLayer.addChild(tree)
+                    }
+                }
+
+            case .fortWall:
+                let rampart = SKSpriteNode(texture: atlas.whitePixel, color: NSColor(calibratedRed: 0.34, green: 0.33, blue: 0.31, alpha: 0.62), size: CGSize(width: w, height: h))
+                rampart.colorBlendFactor = 1.0
+                rampart.position = center
+                terrainLayer.addChild(rampart)
+
+            default:
+                break
+            }
         }
 
-        // 绘制 6 处野外金矿、林场与农庄粮垛
+        // 绘制 6 处高清金矿洞、伐木林场与黄金麦田地标
         resourceAmountLabels.removeAll()
         for res in engine.resourceNodes {
             let pos = scenePoint(fromLogicX: res.x, logicY: res.y)
-            let (rColor, rTitle): (NSColor, String) = {
+            let (tex, rTitle): (SKTexture, String) = {
                 switch res.kind {
-                case .goldMine: return (NSColor(calibratedRed: 0.95, green: 0.76, blue: 0.18, alpha: 0.88), "⛏ 金矿脉")
-                case .lumberForest: return (NSColor(calibratedRed: 0.26, green: 0.62, blue: 0.30, alpha: 0.88), "🌲 伐木林场")
-                case .grainFarm: return (NSColor(calibratedRed: 0.88, green: 0.62, blue: 0.22, alpha: 0.88), "🌾 农庄粮垛")
+                case .goldMine: return (atlas.goldMineLandmark, "⛏ 黄金矿脉")
+                case .lumberForest: return (atlas.lumberCampLandmark, "🌲 伐木林场")
+                case .grainFarm: return (atlas.wheatFarmLandmark, "🌾 丰饶麦庄")
                 }
             }()
-            let disc = SKSpriteNode(texture: atlas.circleFilled, color: rColor, size: CGSize(width: 42, height: 42))
-            disc.colorBlendFactor = 1.0
-            disc.position = pos
-            terrainLayer.addChild(disc)
+            let landmark = SKSpriteNode(texture: tex, size: CGSize(width: 84, height: 72))
+            landmark.position = pos
+            terrainLayer.addChild(landmark)
 
             let lbl = SKLabelNode(fontNamed: "PingFangSC-Semibold")
             lbl.text = "\(rTitle) (\(Int(res.remainingAmount)))"
             lbl.fontSize = 12
-            lbl.fontColor = .white
-            lbl.position = CGPoint(x: pos.x, y: pos.y + 26)
+            lbl.fontColor = NSColor(calibratedRed: 1.0, green: 0.95, blue: 0.78, alpha: 1.0)
+            lbl.position = CGPoint(x: pos.x, y: pos.y + 42)
             terrainLayer.addChild(lbl)
             resourceAmountLabels.append(lbl)
         }
-    }
 
-    private func addCorridorBand(atlas: StickmanTextureAtlas, logicMinY: Double, logicMaxY: Double, color: NSColor, title: String) {
-        let bandH = logicMaxY - logicMinY
-        let cScene = scenePoint(fromLogicX: worldWidth * 0.5, logicY: (logicMinY + logicMaxY) * 0.5)
-        let band = SKSpriteNode(texture: atlas.whitePixel, color: color, size: CGSize(width: worldWidth - 120, height: bandH - 8))
-        band.colorBlendFactor = 1.0
-        band.position = cScene
-        terrainLayer.addChild(band)
-
-        let lbl = SKLabelNode(fontNamed: "PingFangSC-Medium")
-        lbl.text = title
-        lbl.fontSize = 16
-        lbl.fontColor = NSColor(calibratedWhite: 0.85, alpha: 0.32)
-        lbl.position = CGPoint(x: cScene.x, y: cScene.y + CGFloat(bandH * 0.5) - 24)
-        terrainLayer.addChild(lbl)
+        // 若天气为暴雨或暴雪，初始化环境粒子
+        weatherParticleNodes.removeAll()
+        if engine.context.weather == .rainMud || engine.context.weather == .blizzard {
+            let isSnow = engine.context.weather == .blizzard
+            for _ in 0..<56 {
+                let drop = SKSpriteNode(
+                    texture: isSnow ? atlas.circleFilled : atlas.whitePixel,
+                    color: isSnow ? NSColor(calibratedWhite: 0.96, alpha: 0.65) : NSColor(calibratedRed: 0.72, green: 0.85, blue: 1.0, alpha: 0.42),
+                    size: isSnow ? CGSize(width: 5, height: 5) : CGSize(width: 1.8, height: 16)
+                )
+                drop.colorBlendFactor = 1.0
+                drop.zRotation = isSnow ? 0 : -0.24
+                drop.position = CGPoint(x: CGFloat.random(in: 0...CGFloat(worldWidth)), y: CGFloat.random(in: 0...CGFloat(worldHeight)))
+                uiOverlayLayer.addChild(drop)
+                weatherParticleNodes.append(drop)
+            }
+        }
     }
 
     private func buildPreallocatedEntityPools(atlas: StickmanTextureAtlas) {
-        // 1. 建筑池（本阵、正侧城门、城墙、箭塔、拒马、云梯）
         structurePoolNodes.removeAll()
-        for st in engine.structures {
-            let color: NSColor = {
-                let sideBase = st.side == .player
-                    ? (factionPrimaryColors[engine.playerState.faction] ?? .systemRed)
-                    : (factionPrimaryColors[engine.enemyState.faction] ?? .systemBlue)
-                switch st.kind {
-                case .baseCamp: return sideBase.withAlphaComponent(0.92)
-                case .mainGate: return NSColor(calibratedRed: 0.52, green: 0.33, blue: 0.18, alpha: 0.96)
-                case .sideSallyGate: return NSColor(calibratedRed: 0.44, green: 0.30, blue: 0.20, alpha: 0.92)
-                case .wallSegment: return NSColor(calibratedRed: 0.42, green: 0.43, blue: 0.46, alpha: 0.96)
-                case .arrowTower: return sideBase.blended(withFraction: 0.35, of: .darkGray) ?? sideBase
-                case .woodenCheval: return NSColor(calibratedRed: 0.62, green: 0.44, blue: 0.22, alpha: 0.92)
-                case .siegeLadder: return NSColor(calibratedRed: 0.76, green: 0.62, blue: 0.34, alpha: 0.88)
-                }
-            }()
-            let title: String = {
-                let prefix = st.side == .player ? "我方" : "敌方"
-                switch st.kind {
-                case .baseCamp: return "\(prefix)本阵大营"
-                case .mainGate: return "瓮城正门"
-                case .sideSallyGate: return "侧门暗道"
-                case .wallSegment: return "城墙"
-                case .arrowTower: return "\(prefix)箭塔"
-                case .woodenCheval: return "拒马"
-                case .siegeLadder: return "登城云梯"
-                }
-            }()
-            let node = PooledStructureNode(atlas: atlas, width: CGFloat(st.width), height: CGFloat(st.height), color: color, title: title)
-            node.root.position = scenePoint(fromLogicX: st.x, logicY: st.y)
-            structureLayer.addChild(node.root)
-            structurePoolNodes.append(node)
-        }
-
-        // 2. 陷阱视觉节点
+        syncDynamicStructurePool()
         syncTrapVisualPool()
 
-        // 3. 600 名火柴人士兵骨骼池
         soldierPoolNodes.reserveCapacity(GameConstants.maxUnitPoolSize)
         for _ in 0..<GameConstants.maxUnitPoolSize {
             let sNode = PooledSoldierNode(atlas: atlas)
@@ -1180,65 +1520,84 @@ public final class BattlefieldSKScene: SKScene {
             soldierPoolNodes.append(sNode)
         }
 
-        // 4. 双方主帅英雄节点
         let pPrim = factionPrimaryColors[engine.playerState.faction] ?? .systemRed
         let pAcc = factionAccentColors[engine.playerState.faction] ?? .systemYellow
-        let pHero = PooledHeroNode(atlas: atlas, primaryColor: pPrim, accentColor: pAcc, title: "★ 我方主帅")
-        pHero.root.zPosition = 2.0
+        let pHero = PooledHeroNode(atlas: atlas, primaryColor: pPrim, accentColor: pAcc, title: "★ 我军统帅")
+        pHero.root.zPosition = 3.0
         unitBatchLayer.addChild(pHero.root)
         playerHeroNode = pHero
 
         let ePrim = factionPrimaryColors[engine.enemyState.faction] ?? .systemBlue
         let eAcc = factionAccentColors[engine.enemyState.faction] ?? .white
-        let eHero = PooledHeroNode(atlas: atlas, primaryColor: ePrim, accentColor: eAcc, title: "✦ 敌军主帅")
-        eHero.root.zPosition = 2.0
+        let eHero = PooledHeroNode(atlas: atlas, primaryColor: ePrim, accentColor: eAcc, title: "✦ 敌军统帅")
+        eHero.root.zPosition = 3.0
         unitBatchLayer.addChild(eHero.root)
         enemyHeroNode = eHero
 
-        // 5. 400 支投射物池
         projectilePoolNodes.reserveCapacity(GameConstants.maxProjectilePoolSize)
         for _ in 0..<GameConstants.maxProjectilePoolSize {
-            let p = SKSpriteNode(texture: atlas.arrowProjectile, color: .white, size: CGSize(width: 18, height: 5))
+            let p = SKSpriteNode(texture: atlas.arrowProjectile, color: .white, size: CGSize(width: 22, height: 6))
             p.colorBlendFactor = 1.0
             p.isHidden = true
             projectileLayer.addChild(p)
             projectilePoolNodes.append(p)
         }
 
-        // 6. 150 具战场遗骸贴花池
         corpsePoolNodes.reserveCapacity(GameConstants.maxFallenCorpseDecals)
         for _ in 0..<GameConstants.maxFallenCorpseDecals {
-            let c = SKSpriteNode(texture: atlas.corpseSilhouette, color: .gray, size: CGSize(width: 22, height: 10))
+            let c = SKSpriteNode(texture: atlas.corpseSilhouette, color: .gray, size: CGSize(width: 28, height: 13))
             c.colorBlendFactor = 1.0
             c.isHidden = true
             corpseDecalLayer.addChild(c)
             corpsePoolNodes.append(c)
         }
 
-        // 7. 300 个战斗粒子池 + 32 个高暴击飘字池
         particlePoolNodes.reserveCapacity(GameConstants.maxEffectParticlePoolSize)
         lastRenderedParticleCursorSnapshot = Array(repeating: false, count: GameConstants.maxEffectParticlePoolSize)
         for _ in 0..<GameConstants.maxEffectParticlePoolSize {
-            let fx = SKSpriteNode(texture: atlas.sparkStar, color: .yellow, size: CGSize(width: 16, height: 16))
+            let fx = SKSpriteNode(texture: atlas.sparkStar, color: .yellow, size: CGSize(width: 18, height: 18))
             fx.colorBlendFactor = 1.0
             fx.isHidden = true
             effectLayer.addChild(fx)
             particlePoolNodes.append(fx)
         }
 
-        for _ in 0..<32 {
+        for _ in 0..<36 {
             let dmgLbl = SKLabelNode(fontNamed: "PingFangSC-Heavy")
-            dmgLbl.fontSize = 13
+            dmgLbl.fontSize = 14
             dmgLbl.isHidden = true
             effectLayer.addChild(dmgLbl)
             damageLabelPool.append(dmgLbl)
         }
 
-        // 8. 军团战术标牌池（预留 32 支分队容量）
-        for _ in 0..<32 {
+        for _ in 0..<40 {
             let m = PooledSquadMarkerNode(atlas: atlas)
             squadOverlayLayer.addChild(m.root)
             squadMarkerNodes.append(m)
+        }
+    }
+
+    private func syncDynamicStructurePool() {
+        let atlas = StickmanTextureAtlas.shared
+        while structurePoolNodes.count < engine.structures.count {
+            let idx = structurePoolNodes.count
+            let st = engine.structures[idx]
+            let sideBase = st.side == .player
+                ? (factionPrimaryColors[engine.playerState.faction] ?? .systemRed)
+                : (factionPrimaryColors[engine.enemyState.faction] ?? .systemBlue)
+            let prefix = st.side == .player ? "我方" : "敌方"
+            let title: String = {
+                switch st.kind {
+                case .baseCamp, .arrowTower, .barracks, .archeryRange, .stables, .blacksmith, .siegeWorkshop, .imperialFarm, .houseQuarter:
+                    return "\(prefix)\(st.kind.displayName)"
+                default:
+                    return st.kind.displayName
+                }
+            }()
+            let node = PooledStructureNode(atlas: atlas, kind: st.kind, width: CGFloat(st.width), height: CGFloat(st.height), color: sideBase, title: title)
+            node.root.position = scenePoint(fromLogicX: st.x, logicY: st.y)
+            structureLayer.addChild(node.root)
+            structurePoolNodes.append(node)
         }
     }
 
@@ -1252,14 +1611,17 @@ public final class BattlefieldSKScene: SKScene {
         }
     }
 
-    // MARK: - 零分配池化同步：视口裁剪 + 远景 LOD + 11 态火柴人骨骼动作
+    // MARK: - 帧同步渲染（含动态营建脚手架、老兵金星、龟甲阵覆盾与选中脚环）
 
     private func syncAllVisualNodesWithEngine() {
         let atlas = StickmanTextureAtlas.shared
         let visibleRect = currentVisibleSceneRect()
         let isFarLod = enableFarLod && (1.0 / Double(worldCamera.xScale)) < GameConstants.battlefieldFarLodZoomThreshold
 
-        // 1. 同步野外资源剩余储量文字（仅在整数储量变化时更新 SKLabelNode.text，杜绝每帧重绘字体纹理）
+        if structurePoolNodes.count < engine.structures.count {
+            syncDynamicStructurePool()
+        }
+
         if lastResourceIntAmounts.count < engine.resourceNodes.count {
             lastResourceIntAmounts = Array(repeating: -1, count: engine.resourceNodes.count)
         }
@@ -1270,17 +1632,16 @@ public final class BattlefieldSKScene: SKScene {
                 lastResourceIntAmounts[i] = amt
                 let rTitle: String = {
                     switch res.kind {
-                    case .goldMine: return "⛏ 金矿脉"
+                    case .goldMine: return "⛏ 黄金矿脉"
                     case .lumberForest: return "🌲 伐木林场"
-                    case .grainFarm: return "🌾 农庄粮垛"
+                    case .grainFarm: return "🌾 丰饶麦庄"
                     }
                 }()
                 resourceAmountLabels[i].text = "\(rTitle) (\(amt))"
             }
-            resourceAmountLabels[i].alpha = res.remainingAmount > 0 ? 0.92 : 0.35
+            resourceAmountLabels[i].alpha = res.remainingAmount > 0 ? 0.95 : 0.30
         }
 
-        // 2. 同步城墙、城门、箭塔与本阵耐久条（建筑摧毁文案仅写一次，零字符串重分配）
         for i in 0..<min(structurePoolNodes.count, engine.structures.count) {
             let st = engine.structures[i]
             let node = structurePoolNodes[i]
@@ -1288,19 +1649,37 @@ public final class BattlefieldSKScene: SKScene {
                 if !node.wasRenderedDestroyed {
                     node.wasRenderedDestroyed = true
                     node.body.alpha = 0.22
+                    node.brazierGlow.isHidden = true
+                    node.scaffoldOverlay.isHidden = true
                     node.hpBg.isHidden = true
                     node.hpFill.isHidden = true
-                    node.label.text = "[\(node.baseTitle)·已破]"
+                    node.label.text = "[\(node.baseTitle)·废墟]"
                     node.label.fontColor = .systemGray
                 }
+            } else if st.isUnderConstruction {
+                let pct = Int((st.constructionProgress * 100.0).rounded())
+                node.body.alpha = 0.45 + 0.55 * CGFloat(st.constructionProgress)
+                node.scaffoldOverlay.isHidden = false
+                let ratio = CGFloat(max(0.05, min(1.0, st.constructionProgress)))
+                node.hpFill.size.width = node.maxBarWidth * ratio
+                node.hpFill.color = .systemYellow
+                if node.lastProgressBucket != pct / 5 {
+                    node.lastProgressBucket = pct / 5
+                    node.label.text = "🔨 \(node.baseTitle) (\(pct)%)"
+                }
             } else {
+                if node.lastProgressBucket != 100 {
+                    node.lastProgressBucket = 100
+                    node.body.alpha = 1.0
+                    node.scaffoldOverlay.isHidden = true
+                    node.label.text = node.baseTitle
+                }
                 let ratio = CGFloat(max(0.0, min(1.0, st.hp / max(1.0, st.maxHp))))
                 node.hpFill.size.width = node.maxBarWidth * ratio
                 node.hpFill.color = ratio > 0.5 ? .systemGreen : (ratio > 0.25 ? .systemOrange : .systemRed)
             }
         }
 
-        // 3. 同步陷阱显隐（敌方未触发陷阱对我方隐蔽，除非我方是雾林猎手）
         if trapPoolNodes.count < engine.fieldTraps.count {
             syncTrapVisualPool()
         }
@@ -1320,7 +1699,6 @@ public final class BattlefieldSKScene: SKScene {
             }
         }
 
-        // 4. O(N) 单遍预标记各敌军分队是否有可见士兵，再同步军团选择光环、阵型/合围/溃逃标牌与进军线
         if enemySquadVisibleFlags.count < engine.squads.count {
             enemySquadVisibleFlags = Array(repeating: false, count: engine.squads.count + 16)
         } else {
@@ -1361,11 +1739,12 @@ public final class BattlefieldSKScene: SKScene {
             marker.selectRing.isHidden = !isSel
 
             let mRatio = CGFloat(max(0.0, min(1.0, sq.morale / 100.0)))
-            marker.moraleFill.size.width = 44.0 * mRatio
+            marker.moraleFill.size.width = 52.0 * mRatio
             marker.moraleFill.color = sq.isRouting
                 ? .white
                 : (sq.morale < 40.0 ? .systemYellow : (sq.side == .player ? .systemGreen : .systemOrange))
 
+            let starsPrefix = sq.veterancyStars > 0 ? String(repeating: "★", count: sq.veterancyStars) + " " : ""
             let nextText: String
             let nextColor: NSColor
             if sq.isRouting {
@@ -1379,19 +1758,21 @@ public final class BattlefieldSKScene: SKScene {
                 nextColor = .systemOrange
             } else if isSel || !isFarLod {
                 let uShort = UnitConfig.stats(for: sq.primaryUnitType)?.name ?? ""
-                nextText = "\(uShort) \(sq.aliveCount) [\(sq.formation.displayName)]"
-                nextColor = isSel ? .systemYellow : NSColor(calibratedWhite: 0.92, alpha: 0.85)
+                nextText = "\(starsPrefix)\(uShort) \(sq.aliveCount) · \(sq.formation.displayName)"
+                nextColor = isSel
+                    ? NSColor(calibratedRed: 1.0, green: 0.88, blue: 0.42, alpha: 1.0)
+                    : NSColor(calibratedWhite: 0.94, alpha: 0.92)
             } else {
-                nextText = "\(sq.aliveCount)"
-                nextColor = NSColor(calibratedWhite: 0.85, alpha: 0.75)
+                nextText = "\(starsPrefix)\(sq.aliveCount)"
+                nextColor = NSColor(calibratedWhite: 0.88, alpha: 0.80)
             }
             if marker.cachedBadgeText != nextText {
                 marker.cachedBadgeText = nextText
                 marker.badgeLabel.text = nextText
+                marker.badgeBg.size.width = max(68, CGFloat(nextText.count) * 10.5 + 16)
             }
             marker.badgeLabel.fontColor = nextColor
 
-            // 选中我军分队时画出指向航点/目标的战术虚线指示杆
             if isSel && !sq.isRouting && sq.order != .holdGround {
                 let navLogicX = sq.waypoints.first?.x ?? sq.targetX
                 let navLogicY = sq.waypoints.first?.y ?? sq.targetY
@@ -1401,7 +1782,7 @@ public final class BattlefieldSKScene: SKScene {
                 let dist = hypot(dx, dy)
                 if dist > 28.0 {
                     marker.orderLine.isHidden = false
-                    marker.orderLine.size = CGSize(width: dist, height: 2.2)
+                    marker.orderLine.size = CGSize(width: dist, height: 2.6)
                     marker.orderLine.zRotation = atan2(dy, dx)
                 } else {
                     marker.orderLine.isHidden = true
@@ -1411,7 +1792,7 @@ public final class BattlefieldSKScene: SKScene {
             }
         }
 
-        // 5. 同步 600 名火柴人骨骼姿态（严格执行视口裁剪 + 远景 LOD）
+        // 同步 600 名重装火柴人军团士兵姿态
         for i in 0..<soldierPoolNodes.count {
             let vNode = soldierPoolNodes[i]
             let s = engine.soldiers[i]
@@ -1431,20 +1812,34 @@ public final class BattlefieldSKScene: SKScene {
 
             vNode.root.isHidden = false
             vNode.root.position = pos
-            vNode.root.alpha = s.isStealthed ? 0.45 : 1.0
+            // Y 排序增强前后景遮挡立体感
+            vNode.root.zPosition = CGFloat((worldHeight - pos.y) * 0.001)
+            vNode.root.alpha = s.isStealthed ? 0.48 : 1.0
 
-            // 仅当槽位复用切换兵种或势力时才更新纹理/主色引用，避免每帧重复赋值开销
             if vNode.cachedUnitType != s.unitType || vNode.cachedFaction != s.faction {
                 configureSoldierStaticAppearance(vNode, soldier: s, atlas: atlas)
             }
 
-            // 巨熊破阵者 1.35x 巨人比例
-            let baseScale: CGFloat = s.unitType == .shuangyuanGiantBreaker ? 1.38 : 1.0
+            let isUnitSelected = s.side == .player && selectedSet.contains(s.squadId)
+            vNode.selectFootRing.isHidden = !isUnitSelected || isFarLod
+
+            // 负伤单位实时显示精致微缩血条
+            let hpRatio = s.hp / max(1.0, s.maxHp)
+            if !isFarLod && hpRatio < 0.97 && hpRatio > 0.0 {
+                vNode.hpBarBg.isHidden = false
+                vNode.hpBarFill.isHidden = false
+                vNode.hpBarFill.size.width = 16.5 * CGFloat(max(0.05, hpRatio))
+                vNode.hpBarFill.color = hpRatio > 0.5 ? .systemGreen : (hpRatio > 0.25 ? .systemOrange : .systemRed)
+            } else {
+                vNode.hpBarBg.isHidden = true
+                vNode.hpBarFill.isHidden = true
+            }
+
+            let baseScale: CGFloat = s.unitType == .shuangyuanGiantBreaker ? 1.42 : 1.06
             let faceRight = cos(s.facingRadians) >= 0.0
             vNode.root.xScale = faceRight ? baseScale : -baseScale
             vNode.root.yScale = baseScale
 
-            // 远景鸟瞰 LOD（<0.60x）：隐藏细碎四肢与刀枪，仅保留鲜明躯干、头盔、坐骑与军旗
             if isFarLod {
                 vNode.legLeft.isHidden = true
                 vNode.legRight.isHidden = true
@@ -1462,10 +1857,16 @@ public final class BattlefieldSKScene: SKScene {
             vNode.bannerPole.isHidden = !s.isBannerBearer
             vNode.bannerCloth.isHidden = !s.isBannerBearer
 
-            // 解算 11 种骨骼动作关节旋转角
+            let inTestudo = s.squadId >= 0 && s.squadId < engine.squads.count && engine.squads[s.squadId].formation == .testudo
+            if inTestudo && !isSiege {
+                vNode.shieldNode.isHidden = false
+                vNode.shieldNode.texture = atlas.paviseShield
+                vNode.shieldNode.size = CGSize(width: 15.5, height: 22.0)
+                vNode.shieldNode.position = CGPoint(x: 5.5, y: 12.5)
+            }
+
             let phase = CGFloat(s.animPhase)
             let localAimAngle: CGFloat = {
-                // 因 root.xScale 已处理左右镜像翻转，局部朝向角只需映射上下仰俯分量
                 let dyScene = CGFloat(-sin(s.facingRadians))
                 let dxAbs = max(0.15, abs(CGFloat(cos(s.facingRadians))))
                 return atan2(dyScene, dxAbs)
@@ -1519,9 +1920,9 @@ public final class BattlefieldSKScene: SKScene {
                 vNode.legRight.zRotation = 0.24
                 vNode.armMain.zRotation = localAimAngle + 0.35
                 if s.isReloadingBackShield {
-                    vNode.shieldNode.position = CGPoint(x: -4.5, y: 6.0)
-                } else {
-                    vNode.shieldNode.position = CGPoint(x: 5.5, y: 6.0)
+                    vNode.shieldNode.position = CGPoint(x: -5.5, y: 8.0)
+                } else if !inTestudo {
+                    vNode.shieldNode.position = CGPoint(x: 6.5, y: 8.0)
                 }
 
             case .staggerHit:
@@ -1546,7 +1947,6 @@ public final class BattlefieldSKScene: SKScene {
             }
         }
 
-        // 6. 同步双方主帅英雄节点
         if let pHeroNode = playerHeroNode {
             syncSingleHeroNode(pHeroNode, hero: engine.playerHero, atlas: atlas)
         }
@@ -1554,7 +1954,6 @@ public final class BattlefieldSKScene: SKScene {
             syncSingleHeroNode(eHeroNode, hero: engine.enemyHero, atlas: atlas)
         }
 
-        // 7. 同步 400 支抛物线箭矢、弩矢、火雷与投石车巨石
         for i in 0..<projectilePoolNodes.count {
             let pNode = projectilePoolNodes[i]
             let proj = engine.projectiles[i]
@@ -1576,13 +1975,13 @@ public final class BattlefieldSKScene: SKScene {
 
             switch proj.kind {
             case .trebuchetBoulder:
-                pNode.texture = atlas.circleFilled
-                pNode.size = CGSize(width: 15, height: 15)
-                pNode.color = NSColor(calibratedWhite: 0.78, alpha: 1.0)
+                pNode.texture = atlas.boulderProjectile
+                pNode.size = CGSize(width: 24, height: 24)
+                pNode.color = .white
                 pNode.zRotation += 0.22
             case .thunderGrenade:
                 pNode.texture = atlas.sparkStar
-                pNode.size = CGSize(width: 15, height: 15)
+                pNode.size = CGSize(width: 19, height: 19)
                 pNode.color = .systemOrange
                 pNode.zRotation += 0.30
             default:
@@ -1594,27 +1993,26 @@ public final class BattlefieldSKScene: SKScene {
 
                 switch proj.kind {
                 case .ballistaBolt:
-                    pNode.size = CGSize(width: 26, height: 6.5)
+                    pNode.size = CGSize(width: 30, height: 7.5)
                     pNode.color = .systemYellow
                 case .heroHeavyArrow:
-                    pNode.size = CGSize(width: 25, height: 6.5)
+                    pNode.size = CGSize(width: 28, height: 7.5)
                     pNode.color = .systemCyan
                 case .venomArrow:
-                    pNode.size = CGSize(width: 19, height: 5.0)
+                    pNode.size = CGSize(width: 22, height: 6.0)
                     pNode.color = .systemGreen
                 case .crossbowBolt:
-                    pNode.size = CGSize(width: 18, height: 5.2)
-                    pNode.color = NSColor(calibratedWhite: 0.95, alpha: 1.0)
+                    pNode.size = CGSize(width: 21, height: 6.0)
+                    pNode.color = NSColor(calibratedWhite: 0.96, alpha: 1.0)
                 default:
-                    pNode.size = CGSize(width: 17, height: 4.5)
+                    pNode.size = CGSize(width: 20, height: 5.5)
                     pNode.color = proj.side == .player
-                        ? NSColor(calibratedRed: 1.0, green: 0.88, blue: 0.62, alpha: 0.95)
-                        : NSColor(calibratedRed: 0.82, green: 0.90, blue: 1.0, alpha: 0.95)
+                        ? NSColor(calibratedRed: 1.0, green: 0.88, blue: 0.56, alpha: 0.98)
+                        : NSColor(calibratedRed: 0.80, green: 0.90, blue: 1.0, alpha: 0.98)
                 }
             }
         }
 
-        // 8. 同步 150 具倒地遗骸贴花
         for i in 0..<corpsePoolNodes.count {
             let cNode = corpsePoolNodes[i]
             let dec = engine.corpseDecals[i]
@@ -1631,10 +2029,9 @@ public final class BattlefieldSKScene: SKScene {
             cNode.position = pt
             cNode.zRotation = CGFloat(-dec.rotationRadians)
             let baseCol = factionPrimaryColors[dec.faction] ?? .gray
-            cNode.color = baseCol.withAlphaComponent(0.42)
+            cNode.color = baseCol.withAlphaComponent(0.45)
         }
 
-        // 9. 同步 300 个刀剑火星、血花、爆炸、三军战吼波纹与暴击伤害飘字
         for i in 0..<particlePoolNodes.count {
             let fxNode = particlePoolNodes[i]
             let fx = engine.effectParticles[i]
@@ -1658,40 +2055,40 @@ public final class BattlefieldSKScene: SKScene {
             case .shieldSpark:
                 fxNode.texture = atlas.sparkStar
                 fxNode.color = .systemYellow
-                fxNode.size = CGSize(width: 14, height: 14)
+                fxNode.size = CGSize(width: 17, height: 17)
                 fxNode.alpha = 1.0 - progress
             case .parryFlash:
                 fxNode.texture = atlas.sparkStar
                 fxNode.color = .white
-                let sz = 24.0 + progress * 22.0
+                let sz = 30.0 + progress * 28.0
                 fxNode.size = CGSize(width: sz, height: sz)
                 fxNode.alpha = 1.0 - progress
             case .bloodSlash:
                 fxNode.texture = atlas.slashWave
                 fxNode.color = fx.isCritical ? .systemOrange : .systemRed
-                fxNode.size = CGSize(width: 16, height: 13)
-                fxNode.alpha = 0.90 * (1.0 - progress)
-                if showDamageNumbers && !wasActive && (fx.isCritical || fx.numericValue >= 38) {
+                fxNode.size = CGSize(width: 22, height: 18)
+                fxNode.alpha = 0.92 * (1.0 - progress)
+                if showDamageNumbers && !wasActive && (fx.isCritical || fx.numericValue >= 32) {
                     spawnFloatingDamageText(value: fx.numericValue, isCritical: fx.isCritical, at: pt)
                 }
             case .explosionFire:
-                fxNode.texture = atlas.circleFilled
+                fxNode.texture = atlas.softGlowHalo
                 fxNode.color = .systemOrange
-                let sz = 36.0 + progress * 90.0
+                let sz = 46.0 + progress * 115.0
+                fxNode.size = CGSize(width: sz, height: sz)
+                fxNode.alpha = 0.88 * (1.0 - progress)
+            case .boulderDust:
+                fxNode.texture = atlas.softGlowHalo
+                fxNode.color = NSColor(calibratedRed: 0.85, green: 0.74, blue: 0.56, alpha: 1.0)
+                let sz = 48.0 + progress * 120.0
                 fxNode.size = CGSize(width: sz, height: sz)
                 fxNode.alpha = 0.78 * (1.0 - progress)
-            case .boulderDust:
-                fxNode.texture = atlas.circleFilled
-                fxNode.color = NSColor(calibratedRed: 0.78, green: 0.70, blue: 0.56, alpha: 1.0)
-                let sz = 40.0 + progress * 96.0
-                fxNode.size = CGSize(width: sz, height: sz)
-                fxNode.alpha = 0.72 * (1.0 - progress)
             case .warCryWave:
                 fxNode.texture = atlas.circleRing
                 fxNode.color = .systemYellow
-                let sz = 48.0 + progress * 560.0
+                let sz = 52.0 + progress * 600.0
                 fxNode.size = CGSize(width: sz, height: sz)
-                fxNode.alpha = 0.85 * (1.0 - progress)
+                fxNode.alpha = 0.88 * (1.0 - progress)
             case .damageNumber:
                 fxNode.isHidden = true
             }
@@ -1704,16 +2101,16 @@ public final class BattlefieldSKScene: SKScene {
         damageLabelCursor += 1
         lbl.removeAllActions()
         lbl.text = isCritical ? "暴击 -\(value)!" : "-\(value)"
-        lbl.fontSize = isCritical ? 15 : 12
+        lbl.fontSize = isCritical ? 16 : 12.5
         lbl.fontColor = isCritical ? .systemYellow : .white
-        lbl.position = CGPoint(x: point.x, y: point.y + 16)
+        lbl.position = CGPoint(x: point.x, y: point.y + 20)
         lbl.alpha = 1.0
         lbl.isHidden = false
         lbl.run(
             SKAction.sequence([
                 SKAction.group([
-                    SKAction.moveBy(x: 0, y: 24, duration: 0.48),
-                    SKAction.fadeOut(withDuration: 0.48)
+                    SKAction.moveBy(x: 0, y: 28, duration: 0.50),
+                    SKAction.fadeOut(withDuration: 0.50)
                 ]),
                 SKAction.hide()
             ])
@@ -1731,15 +2128,32 @@ public final class BattlefieldSKScene: SKScene {
         let prim = factionPrimaryColors[s.faction] ?? .systemRed
         let acc = factionAccentColors[s.faction] ?? .white
         let limbCol = s.side == .player
-            ? NSColor(calibratedWhite: 0.94, alpha: 1.0)
-            : NSColor(calibratedWhite: 0.80, alpha: 1.0)
+            ? NSColor(calibratedRed: 0.94, green: 0.92, blue: 0.86, alpha: 1.0)
+            : NSColor(calibratedRed: 0.80, green: 0.78, blue: 0.74, alpha: 1.0)
 
         vNode.torso.color = prim
-        vNode.head.color = limbCol
         vNode.legLeft.color = limbCol
         vNode.legRight.color = limbCol
         vNode.armMain.color = limbCol
         vNode.bannerCloth.color = prim
+        vNode.capeNode.color = prim
+
+        // 按兵种职能选择罗马百夫长羽冠盔、游牧尖盔或王牌统领兜鍪，并为精锐/骑兵挂载飘逸披风
+        let isElite = s.unitType.rawValue.contains("_") && s.unitType != .shieldSwordsman && s.unitType != .compositeArcher && s.unitType != .lightCavalry && s.unitType != .greatAxeman
+        vNode.capeNode.isHidden = !(isElite || s.category == .cavalry || s.isBannerBearer)
+        if isElite || s.isBannerBearer {
+            vNode.head.texture = atlas.legionCrestHead
+            vNode.head.color = acc
+        } else if s.category == .ranged || s.category == .cavalry {
+            vNode.head.texture = atlas.nomadHelmHead
+            vNode.head.color = limbCol
+        } else if s.unitType == .sapper {
+            vNode.head.texture = atlas.circleFilled
+            vNode.head.color = NSColor(calibratedRed: 0.92, green: 0.80, blue: 0.58, alpha: 1.0)
+        } else {
+            vNode.head.texture = atlas.legionCrestHead
+            vNode.head.color = limbCol
+        }
 
         let isCav = (s.category == .cavalry)
         let isSiege = (s.category == .siege)
@@ -1747,45 +2161,45 @@ public final class BattlefieldSKScene: SKScene {
         vNode.siegeNode.isHidden = !isSiege
         if isCav {
             vNode.mountNode.color = s.unitType == .shamoMamelukeCamel
-                ? NSColor(calibratedRed: 0.82, green: 0.68, blue: 0.42, alpha: 1.0)
-                : (s.unitType == .xuanjiaCataphract ? (prim.blended(withFraction: 0.4, of: .darkGray) ?? prim) : NSColor(calibratedRed: 0.48, green: 0.34, blue: 0.22, alpha: 1.0))
+                ? NSColor(calibratedRed: 0.85, green: 0.70, blue: 0.42, alpha: 1.0)
+                : (s.unitType == .xuanjiaCataphract ? (prim.blended(withFraction: 0.45, of: .darkGray) ?? prim) : NSColor(calibratedRed: 0.52, green: 0.36, blue: 0.22, alpha: 1.0))
         }
         if isSiege {
             vNode.siegeNode.color = s.unitType == .trebuchet
-                ? NSColor(calibratedRed: 0.64, green: 0.45, blue: 0.24, alpha: 1.0)
-                : NSColor(calibratedRed: 0.55, green: 0.52, blue: 0.48, alpha: 1.0)
+                ? NSColor(calibratedRed: 0.68, green: 0.48, blue: 0.26, alpha: 1.0)
+                : NSColor(calibratedRed: 0.58, green: 0.54, blue: 0.48, alpha: 1.0)
         }
 
-        // 武器与盾牌匹配 16 兵种真实外观
         switch s.unitType {
         case .pikeman, .yanlongHalberdGrenadier, .xuanjiaCataphract:
             vNode.weaponNode.texture = atlas.pikeShaft
-            vNode.weaponNode.size = CGSize(width: 28, height: 5.5)
+            vNode.weaponNode.size = CGSize(width: 36, height: 7.0)
             vNode.weaponNode.color = acc
         case .greatAxeman, .shuangyuanGiantBreaker, .xueyueWardrumBerserker:
             vNode.weaponNode.texture = atlas.greatAxe
-            vNode.weaponNode.size = CGSize(width: 22, height: 13)
+            vNode.weaponNode.size = CGSize(width: 28, height: 16)
             vNode.weaponNode.color = acc
         case .compositeArcher, .canglangKeshigHorseArcher, .wulinShadowSniper:
             vNode.weaponNode.texture = atlas.bowArc
-            vNode.weaponNode.size = CGSize(width: 12, height: 17)
+            vNode.weaponNode.size = CGSize(width: 15, height: 21)
             vNode.weaponNode.color = acc
         case .tieyingPaviseCrossbow, .ballista:
             vNode.weaponNode.texture = atlas.crossbowFrame
-            vNode.weaponNode.size = CGSize(width: 16, height: 13)
+            vNode.weaponNode.size = CGSize(width: 20, height: 16)
             vNode.weaponNode.color = acc
         default:
             vNode.weaponNode.texture = atlas.saberBlade
-            vNode.weaponNode.size = CGSize(width: 19, height: 6)
-            vNode.weaponNode.color = NSColor(calibratedWhite: 0.92, alpha: 1.0)
+            vNode.weaponNode.size = CGSize(width: 25, height: 8.5)
+            vNode.weaponNode.color = NSColor(calibratedWhite: 0.96, alpha: 1.0)
         }
 
-        if s.shieldRangedBlock >= 0.30 {
+        if s.shieldRangedBlock >= 0.28 {
             vNode.shieldNode.isHidden = false
-            let usePavise = (s.unitType == .tieyingPaviseCrossbow || s.unitType == .yanlongHalberdGrenadier)
+            let usePavise = (s.unitType == .shieldSwordsman || s.unitType == .tieyingPaviseCrossbow || s.unitType == .yanlongHalberdGrenadier)
             vNode.shieldNode.texture = usePavise ? atlas.paviseShield : atlas.roundShield
-            vNode.shieldNode.size = usePavise ? CGSize(width: 10, height: 15) : CGSize(width: 11.5, height: 11.5)
-            vNode.shieldNode.color = acc.blended(withFraction: 0.45, of: prim) ?? acc
+            vNode.shieldNode.size = usePavise ? CGSize(width: 13.5, height: 19.5) : CGSize(width: 15.0, height: 15.0)
+            vNode.shieldNode.position = CGPoint(x: 6.0, y: 7.5)
+            vNode.shieldNode.color = acc.blended(withFraction: 0.55, of: prim) ?? prim
         } else {
             vNode.shieldNode.isHidden = true
         }
@@ -1813,34 +2227,34 @@ public final class BattlefieldSKScene: SKScene {
         switch hero.activeWeapon {
         case .commandSaber:
             node.weaponSprite.texture = atlas.saberBlade
-            node.weaponSprite.size = CGSize(width: 26, height: 8)
+            node.weaponSprite.size = CGSize(width: 34, height: 11)
             node.shieldSprite.isHidden = false
-            node.shieldSprite.position = CGPoint(x: faceRight ? 8 : -8, y: 8)
+            node.shieldSprite.position = CGPoint(x: faceRight ? 9 : -9, y: 10)
             node.shieldSprite.color = hero.isInPerfectParryWindow ? .white : (hero.isBlocking ? .systemCyan : .systemYellow)
         case .breakerSpear:
             node.weaponSprite.texture = atlas.pikeShaft
-            node.weaponSprite.size = CGSize(width: 38, height: 7)
+            node.weaponSprite.size = CGSize(width: 46, height: 8.5)
             node.shieldSprite.isHidden = true
         case .heavyWarbow:
             node.weaponSprite.texture = atlas.bowArc
-            node.weaponSprite.size = CGSize(width: 16, height: 22)
+            node.weaponSprite.size = CGSize(width: 19, height: 26)
             node.shieldSprite.isHidden = true
         }
 
         let hpRatio = CGFloat(max(0.0, min(1.0, hero.hp / max(1.0, hero.maxHp))))
-        node.hpFill.size.width = 34.0 * hpRatio
+        node.hpFill.size.width = 44.0 * hpRatio
         node.hpFill.color = hero.vitalState == .woundedWeakened ? .systemOrange : .systemGreen
 
         if hero.bowChargeElapsed > 0.02 {
             node.bowChargeBar.isHidden = false
-            node.bowChargeBar.size.width = 34.0 * CGFloat(min(1.0, hero.bowChargeElapsed / 0.90))
+            node.bowChargeBar.size.width = 44.0 * CGFloat(min(1.0, hero.bowChargeElapsed / 0.90))
         } else {
             node.bowChargeBar.isHidden = true
         }
 
         node.auraRing.size = hero.ironBulwarkRemainingSec > 0.0
-            ? CGSize(width: 56, height: 56)
-            : CGSize(width: 38, height: 38)
+            ? CGSize(width: 66, height: 66)
+            : CGSize(width: 48, height: 48)
     }
 
     // MARK: - 相机缩放与边界钳制
@@ -1848,10 +2262,10 @@ public final class BattlefieldSKScene: SKScene {
     public func resetCameraToCenter() {
         if engine.controlMode == .heroAction && engine.playerHero.isActiveOnField {
             worldCamera.position = scenePoint(fromLogicX: engine.playerHero.x, logicY: engine.playerHero.y)
-            worldCamera.setScale(0.92)
+            worldCamera.setScale(0.88)
         } else {
             worldCamera.position = CGPoint(x: worldWidth * 0.5, y: worldHeight * 0.5)
-            worldCamera.setScale(1.22)
+            worldCamera.setScale(1.12)
         }
         clampCameraPosition()
     }
@@ -1875,16 +2289,35 @@ public final class BattlefieldSKScene: SKScene {
         worldCamera.position.y = max(0, min(CGFloat(worldHeight), worldCamera.position.y))
     }
 
-    // MARK: - macOS 原生键鼠与触控板全功能事件处理
+    // MARK: - macOS 原生键鼠、建筑选址落盘与《罗马全面战争》右键拖拽拉阵线交互
 
     public override func mouseMoved(with event: NSEvent) {
         let pt = event.location(in: self)
+        mouseHoverScenePoint = pt
         heroAimLogicPoint = logicCoordinates(fromScenePoint: pt)
     }
 
     public override func mouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
+        view?.window?.makeFirstResponder(self)
         let pt = event.location(in: self)
+        mouseHoverScenePoint = pt
+
+        // 若正处于 RTS 建筑选址预览模式：左键落盘建造！
+        if let buildKind = pendingBuildKind {
+            let lPt = logicCoordinates(fromScenePoint: pt)
+            if engine.constructBuilding(side: .player, kind: buildKind, atX: lPt.x, atY: lPt.y) {
+                syncDynamicStructurePool()
+                if !event.modifierFlags.contains(.shift) {
+                    cancelPendingBuildPlacement()
+                }
+                onInteractionFeedback?("🏗 已落盘营建【\(buildKind.displayName)】，民夫正赶往工地施工！（按住 Shift 可连续选址多座）")
+                drainAndPlayAudioCues()
+                pushUiSyncNow()
+            } else {
+                onInteractionFeedback?("❌ 此处无法营建【\(buildKind.displayName)】（需位于己方控制区平整地面，避开河流与已有建筑）")
+            }
+            return
+        }
 
         if engine.controlMode == .heroAction {
             heroAimLogicPoint = logicCoordinates(fromScenePoint: pt)
@@ -1892,7 +2325,6 @@ public final class BattlefieldSKScene: SKScene {
             return
         }
 
-        // 按住 Option + 左键拖拽支持单手平移战场镜头
         if event.modifierFlags.contains(.option) {
             isOptionPanningDrag = true
             dragStartScenePoint = pt
@@ -1904,10 +2336,16 @@ public final class BattlefieldSKScene: SKScene {
         marqueeFillNode.position = pt
         marqueeFillNode.size = .zero
         marqueeFillNode.isHidden = false
+        marqueeBorderTop.position = pt
+        marqueeBorderTop.size = .zero
+        marqueeBorderTop.isHidden = false
     }
 
     public override func mouseDragged(with event: NSEvent) {
         let current = event.location(in: self)
+        mouseHoverScenePoint = current
+        if pendingBuildKind != nil { return }
+
         if engine.controlMode == .heroAction {
             heroAimLogicPoint = logicCoordinates(fromScenePoint: current)
             heroMouseLeftHeld = true
@@ -1923,12 +2361,18 @@ public final class BattlefieldSKScene: SKScene {
         guard let start = dragStartScenePoint else { return }
         let width = abs(current.x - start.x)
         let height = abs(current.y - start.y)
-        marqueeFillNode.position = CGPoint(x: (start.x + current.x) * 0.5, y: (start.y + current.y) * 0.5)
+        let midX = (start.x + current.x) * 0.5
+        let midY = (start.y + current.y) * 0.5
+        marqueeFillNode.position = CGPoint(x: midX, y: midY)
         marqueeFillNode.size = CGSize(width: width, height: height)
+        marqueeBorderTop.position = CGPoint(x: midX, y: max(start.y, current.y))
+        marqueeBorderTop.size = CGSize(width: width, height: 2.0)
     }
 
     public override func mouseUp(with event: NSEvent) {
         let end = event.location(in: self)
+        if pendingBuildKind != nil { return }
+
         if engine.controlMode == .heroAction {
             heroAimLogicPoint = logicCoordinates(fromScenePoint: end)
             heroMouseLeftHeld = false
@@ -1943,6 +2387,7 @@ public final class BattlefieldSKScene: SKScene {
 
         guard let start = dragStartScenePoint else { return }
         marqueeFillNode.isHidden = true
+        marqueeBorderTop.isHidden = true
         dragStartScenePoint = nil
 
         let shiftHeld = event.modifierFlags.contains(.shift)
@@ -1950,30 +2395,28 @@ public final class BattlefieldSKScene: SKScene {
         let endLogic = logicCoordinates(fromScenePoint: end)
 
         if dragDist < 10.0 {
-            if let pickedId = engine.pickSquadAtPoint(x: endLogic.x, y: endLogic.y, tolerance: 56.0, side: .player) {
+            if let pickedId = engine.pickSquadAtPoint(x: endLogic.x, y: endLogic.y, tolerance: 62.0, side: .player) {
+                BattleAudioEngine.shared.play(.uiClick)
                 if event.clickCount >= 2 {
-                    // 双击：全选场上同兵种分队！
                     let targetUnitType = engine.squads[pickedId].primaryUnitType
                     selectedSquadIds = engine.squads
                         .filter { $0.side == .player && $0.aliveCount > 0 && !$0.isRouting && $0.primaryUnitType == targetUnitType }
                         .map(\.id)
                     let uName = UnitConfig.stats(for: targetUnitType)?.name ?? ""
-                    onInteractionFeedback?("双击全选同类兵种【\(uName)】（共 \(selectedSquadIds.count) 支编队）")
+                    onInteractionFeedback?("双击全选同类军团【\(uName)】（共 \(selectedSquadIds.count) 支编队）")
                 } else if shiftHeld {
                     if let idx = selectedSquadIds.firstIndex(of: pickedId) {
                         selectedSquadIds.remove(at: idx)
                     } else {
                         selectedSquadIds.append(pickedId)
                     }
-                    onInteractionFeedback?("Shift 编队增减选：当前选中 \(selectedSquadIds.count) 支编队")
+                    onInteractionFeedback?("Shift 编队加减选：当前选中 \(selectedSquadIds.count) 支编队")
                 } else {
                     selectedSquadIds = [pickedId]
                     let sq = engine.squads[pickedId]
                     let uName = UnitConfig.stats(for: sq.primaryUnitType)?.name ?? ""
-                    onInteractionFeedback?("已点选【\(uName)】（人数 \(sq.aliveCount) · 士气 \(Int(sq.morale)) · \(sq.formation.displayName)）")
+                    onInteractionFeedback?("已点选【\(uName)】（存活 \(sq.aliveCount) · 士气 \(Int(sq.morale)) · \(sq.formation.displayName)）")
                 }
-            } else if !shiftHeld {
-                onInteractionFeedback?("点击地面 (\(Int(endLogic.x)), \(Int(endLogic.y))) —— 右键可命令当前选中编队机动至此")
             }
         } else {
             let startLogic = logicCoordinates(fromScenePoint: start)
@@ -1985,21 +2428,25 @@ public final class BattlefieldSKScene: SKScene {
                 side: .player
             )
             if !boxed.isEmpty {
+                BattleAudioEngine.shared.play(.uiClick)
                 if shiftHeld {
-                    let merged = Set(selectedSquadIds).union(boxed)
-                    selectedSquadIds = merged.sorted()
+                    selectedSquadIds = Set(selectedSquadIds).union(boxed).sorted()
                 } else {
                     selectedSquadIds = boxed
                 }
-                onInteractionFeedback?("左键框选成功：已选中 \(selectedSquadIds.count) 支作战编队，右键点击地面/敌军即可下令！")
-            } else {
-                onInteractionFeedback?("框选区域内未发现未溃逃的我军编队")
+                onInteractionFeedback?("已框选 \(selectedSquadIds.count) 支军团 —— 右键点击进军，或【按住右键拖拽】拉设古罗马横列战线！")
             }
         }
         pushUiSyncNow()
     }
 
     public override func rightMouseDown(with event: NSEvent) {
+        if pendingBuildKind != nil {
+            cancelPendingBuildPlacement()
+            onInteractionFeedback?("已取消建筑选址")
+            return
+        }
+
         let pt = event.location(in: self)
         if engine.controlMode == .heroAction {
             heroAimLogicPoint = logicCoordinates(fromScenePoint: pt)
@@ -2008,21 +2455,107 @@ public final class BattlefieldSKScene: SKScene {
                 heroMouseLeftHeld = false
                 onInteractionFeedback?("已收弦取消百石硬弓蓄力")
             } else if engine.playerHero.activeWeapon == .commandSaber {
-                onInteractionFeedback?("🛡 主帅举盾格挡（前 0.25s 精准弹反窗口可震晕近身敌兵 1.5s）！")
+                BattleAudioEngine.shared.play(.swordClash, volumeScale: 0.45)
+                onInteractionFeedback?("🛡 主帅举盾格挡（前 0.25s 精准弹反窗口可零伤震晕近身敌兵 1.5s）！")
             }
             return
         }
 
-        let logicPt = logicCoordinates(fromScenePoint: pt)
+        rightDragStartScenePoint = pt
+        deploymentLineNode.position = pt
+        deploymentLineNode.size = .zero
+        deploymentLineNode.isHidden = true
+    }
+
+    public override func rightMouseDragged(with event: NSEvent) {
+        let pt = event.location(in: self)
+        if engine.controlMode == .heroAction {
+            heroAimLogicPoint = logicCoordinates(fromScenePoint: pt)
+            heroMouseRightHeld = true
+            return
+        }
+        guard let start = rightDragStartScenePoint else { return }
+        let dx = pt.x - start.x
+        let dy = pt.y - start.y
+        let len = hypot(dx, dy)
+        if len >= 28.0 {
+            deploymentLineNode.isHidden = false
+            deploymentLineNode.position = start
+            deploymentLineNode.size = CGSize(width: len, height: 5.5)
+            deploymentLineNode.zRotation = atan2(dy, dx)
+        }
+    }
+
+    public override func rightMouseUp(with event: NSEvent) {
+        let endPt = event.location(in: self)
+        if engine.controlMode == .heroAction {
+            heroMouseRightHeld = false
+            return
+        }
+
+        deploymentLineNode.isHidden = true
+        let startPt = rightDragStartScenePoint ?? endPt
+        rightDragStartScenePoint = nil
+
         let targets = effectiveTargetSquadIds()
         guard !targets.isEmpty else {
             onInteractionFeedback?("当前无可调度编队")
             return
         }
 
+        let dragLen = hypot(endPt.x - startPt.x, endPt.y - startPt.y)
         let appendWp = event.modifierFlags.contains(.shift)
+
+        // 《罗马全面战争》式右键拖拽拉阵线：当拖拽长度 >= 36px 时，按拖拽线段均匀排布多支军团并自动设定垂直迎敌朝向与阵宽！
+        if dragLen >= 36.0 && !appendWp {
+            let startLogic = logicCoordinates(fromScenePoint: startPt)
+            let endLogic = logicCoordinates(fromScenePoint: endPt)
+            let lineDx = endLogic.x - startLogic.x
+            let lineDy = endLogic.y - startLogic.y
+            // 战线法向量（朝向最近敌军方向）
+            var normalX = -lineDy
+            var normalY = lineDx
+            let midX = (startLogic.x + endLogic.x) * 0.5
+            let midY = (startLogic.y + endLogic.y) * 0.5
+            let eCamp = engine.baseCampCoordinates(for: .enemy)
+            if normalX * (eCamp.x - midX) + normalY * (eCamp.y - midY) < 0.0 {
+                normalX = -normalX
+                normalY = -normalY
+            }
+            let explicitFacing = atan2(normalY, normalX)
+            let perSquadSpan = dragLen / CGFloat(max(1, targets.count))
+            let spreadMult = max(0.65, min(2.10, Double(perSquadSpan) / 140.0))
+
+            for (idx, sqId) in targets.enumerated() {
+                let ratio = targets.count == 1 ? 0.5 : Double(idx) / Double(targets.count - 1)
+                let slotX = startLogic.x + lineDx * ratio
+                let slotY = startLogic.y + lineDy * ratio
+                let needAdvance = engine.squads[sqId].order == .holdGround || engine.squads[sqId].order == .retreat
+                engine.issueSquadCommand(
+                    SquadCommandRequest(
+                        squadIds: [sqId],
+                        order: needAdvance ? .advance : nil,
+                        targetWorldX: slotX,
+                        targetWorldY: slotY,
+                        appendWaypoint: false,
+                        explicitFacingRadians: explicitFacing,
+                        lineSpreadMultiplier: spreadMult
+                    )
+                )
+            }
+            orderMarkerNode.text = "⚔️ 战线展开 (\(targets.count) 军团)"
+            orderMarkerNode.fontColor = NSColor(calibratedRed: 1.0, green: 0.86, blue: 0.32, alpha: 0.98)
+            orderMarkerNode.position = CGPoint(x: (startPt.x + endPt.x) * 0.5, y: (startPt.y + endPt.y) * 0.5)
+            orderMarkerNode.isHidden = false
+            orderMarkerFadeTimer = 1.8
+            onInteractionFeedback?("📐 已按拖拽防线排布 \(targets.count) 支军团横列展开（阵宽倍率 \(String(format: "%.1fx", spreadMult))）！")
+            drainAndPlayAudioCues()
+            pushUiSyncNow()
+            return
+        }
+
+        let logicPt = logicCoordinates(fromScenePoint: endPt)
         if let enemyHit = engine.pickEnemyTargetAtPoint(x: logicPt.x, y: logicPt.y, tolerance: 72.0) {
-            // 右键点中敌军或敌城防：若当前处于坚守/撤退，自动切为稳步推进/包抄进攻！
             let hasFlankSelected = targets.contains { engine.squads[$0].order == .flank || engine.squads[$0].order == .pincerEncircle }
             let attackOrder: TacticalOrder? = hasFlankSelected ? nil : .advance
             engine.issueSquadCommand(
@@ -2034,12 +2567,12 @@ public final class BattlefieldSKScene: SKScene {
                     appendWaypoint: appendWp
                 )
             )
-            orderMarkerNode.text = "⚔️ 进攻 \(enemyHit.label)"
+            orderMarkerNode.text = "⚔️ 集火 \(enemyHit.label)"
             orderMarkerNode.fontColor = .systemRed
             orderMarkerNode.position = scenePoint(fromLogicX: enemyHit.x, logicY: enemyHit.y)
             orderMarkerNode.isHidden = false
             orderMarkerFadeTimer = 1.8
-            onInteractionFeedback?("右键锁定攻击目标 -> \(enemyHit.label)（按 F 可改走大弧线侧翼包抄，按 G 钳形合围）")
+            onInteractionFeedback?("🎯 右键锁定进攻目标 -> \(enemyHit.label)")
         } else {
             let needSwitchFromHold = targets.allSatisfy { engine.squads[$0].order == .holdGround || engine.squads[$0].order == .retreat }
             engine.issueSquadCommand(
@@ -2051,32 +2584,19 @@ public final class BattlefieldSKScene: SKScene {
                     appendWaypoint: appendWp
                 )
             )
-            orderMarkerNode.text = appendWp ? "⊕ 队列航点" : "⊕ 机动目标"
+            orderMarkerNode.text = appendWp ? "⊕ 迂回航点" : "⊕ 进军目标"
             orderMarkerNode.fontColor = NSColor(calibratedRed: 1.0, green: 0.86, blue: 0.32, alpha: 0.96)
-            orderMarkerNode.position = pt
+            orderMarkerNode.position = endPt
             orderMarkerNode.isHidden = false
             orderMarkerFadeTimer = 1.6
             onInteractionFeedback?(
                 appendWp
                     ? "Shift+右键追加迂回航点 (\(Int(logicPt.x)), \(Int(logicPt.y)))"
-                    : "右键下令 \(targets.count) 支编队向 (\(Int(logicPt.x)), \(Int(logicPt.y))) 保持阵型推进"
+                    : "右键下令 \(targets.count) 支编队向 (\(Int(logicPt.x)), \(Int(logicPt.y))) 列阵推进"
             )
         }
+        drainAndPlayAudioCues()
         pushUiSyncNow()
-    }
-
-    public override func rightMouseDragged(with event: NSEvent) {
-        if engine.controlMode == .heroAction {
-            let pt = event.location(in: self)
-            heroAimLogicPoint = logicCoordinates(fromScenePoint: pt)
-            heroMouseRightHeld = true
-        }
-    }
-
-    public override func rightMouseUp(with event: NSEvent) {
-        if engine.controlMode == .heroAction {
-            heroMouseRightHeld = false
-        }
     }
 
     public override func otherMouseDragged(with event: NSEvent) {
@@ -2102,13 +2622,16 @@ public final class BattlefieldSKScene: SKScene {
     }
 
     public override func keyDown(with event: NSEvent) {
-        // Esc 键：呼出/关闭战场军务菜单
-        if event.keyCode == 53 {
+        if event.keyCode == 53 { // Esc
+            if pendingBuildKind != nil {
+                cancelPendingBuildPlacement()
+                onInteractionFeedback?("已取消建筑选址")
+                return
+            }
             onRequestToggleEscapeMenu?()
             return
         }
-        // Tab 键：切换 RTS 上帝视角 <-> 主帅亲自上阵英雄模式
-        if event.keyCode == 48 {
+        if event.keyCode == 48 { // Tab
             if !event.isARepeat {
                 _ = requestToggleControlMode()
             }
@@ -2118,16 +2641,19 @@ public final class BattlefieldSKScene: SKScene {
         pressedKeyCodes.insert(event.keyCode)
         guard !event.isARepeat else { return }
 
-        // B 键：双视角通用本阵警钟切换
-        if event.keyCode == 11 {
+        if event.keyCode == 11 { // B -> 警戒钟
             toggleGarrisonBell()
             return
         }
+        if event.keyCode == 47 { // `.` -> 查找空闲民夫
+            focusIdleOrNearestSapper()
+            return
+        }
 
-        // Ctrl + 1~6 绑定军团编组；F1~F6 快速选定军团（连按两次镜头居中）
         if event.modifierFlags.contains(.control), let grp = Self.groupNumberForNumberKey(event.keyCode) {
             let valid = effectiveTargetSquadIds()
             controlGroups[grp] = valid
+            BattleAudioEngine.shared.play(.uiClick)
             onInteractionFeedback?("已将当前 \(valid.count) 支编队绑定至【第 \(grp) 军团 (F\(grp))】")
             return
         }
@@ -2143,62 +2669,38 @@ public final class BattlefieldSKScene: SKScene {
                 return
             }
             switch event.keyCode {
-            case 50:      // `~` 全选主力
-                selectAllCombatSquads()
-            case 49, 35:  // Space / P -> 战术暂停
-                toggleBattlePause()
-            case 18:      // 1
-                applyFormationToSelection(.phalanxRect)
-            case 19:      // 2
-                applyFormationToSelection(.echelonLine)
-            case 20:      // 3
-                applyFormationToSelection(.wedgeCharge)
-            case 21:      // 4
-                applyFormationToSelection(.circleDefense)
-            case 12:      // Q -> 稳步推进
-                applyTacticalOrderToSelection(.advance)
-            case 13:      // W -> 原地坚守
-                applyTacticalOrderToSelection(.holdGround)
-            case 14:      // E -> 全军冲锋
-                applyTacticalOrderToSelection(.allOutCharge)
-            case 15:      // R -> 交替撤退
-                applyTacticalOrderToSelection(.retreat)
-            case 3:       // F -> 侧翼包抄
-                applyTacticalOrderToSelection(.flank)
-            case 5:       // G -> 钳形合围
-                applyTacticalOrderToSelection(.pincerEncircle)
-            case 6:       // Z -> 诈败诱敌
-                applyTacticalOrderToSelection(.feignedRetreat)
-            case 7:       // X -> 密林设伏
-                applyTacticalOrderToSelection(.ambushHide)
-            case 8:       // C -> 奇袭断粮
-                applyTacticalOrderToSelection(.raidSupply)
-            case 123, 124, 125, 126:
-                break // 方向键由 updateCameraAndHeroInput 平滑平移
-            default:
-                super.keyDown(with: event)
+            case 50: selectAllCombatSquads()
+            case 49, 35: toggleBattlePause()
+            case 18: applyFormationToSelection(.phalanxRect)
+            case 19: applyFormationToSelection(.echelonLine)
+            case 20: applyFormationToSelection(.wedgeCharge)
+            case 21: applyFormationToSelection(.circleDefense)
+            case 23: applyFormationToSelection(.testudo) // 数字键 5 -> 罗马龟甲阵！
+            case 4:  beginOrAutoConstructBuilding(.houseQuarter, quickAutoPlace: event.modifierFlags.contains(.shift)) // H -> 快捷造民居
+            case 12: applyTacticalOrderToSelection(.advance)
+            case 13: applyTacticalOrderToSelection(.holdGround)
+            case 14: applyTacticalOrderToSelection(.allOutCharge)
+            case 15: applyTacticalOrderToSelection(.retreat)
+            case 3:  applyTacticalOrderToSelection(.flank)
+            case 5:  applyTacticalOrderToSelection(.pincerEncircle)
+            case 6:  applyTacticalOrderToSelection(.feignedRetreat)
+            case 7:  applyTacticalOrderToSelection(.ambushHide)
+            case 8:  applyTacticalOrderToSelection(.raidSupply)
+            case 123, 124, 125, 126: break
+            default: super.keyDown(with: event)
             }
 
         case .heroAction:
             switch event.keyCode {
-            case 18:      // 1 -> 统帅佩刀
-                switchHeroWeapon(.commandSaber)
-            case 19:      // 2 -> 破阵大枪
-                switchHeroWeapon(.breakerSpear)
-            case 20:      // 3 -> 百石硬弓
-                switchHeroWeapon(.heavyWarbow)
-            case 49:      // Space -> 破阵突击冲锋/闪避
-                triggerHeroSkill(.breakthroughCharge)
-            case 14, 21:  // E 或数字键 4 -> 铁壁横戈
-                triggerHeroSkill(.ironBulwark)
-            case 15, 23:  // R 或数字键 5 -> 三军战吼
-                triggerHeroSkill(.grandWarCry)
-            case 35:      // P -> 英雄模式暂停
-                toggleBattlePause()
-            case 0, 1, 2, 13, 123, 124, 125, 126:
-                break // WASD 与方向键由 pressedKeyCodes 连续驱动
-            default:
-                super.keyDown(with: event)
+            case 18: switchHeroWeapon(.commandSaber)
+            case 19: switchHeroWeapon(.breakerSpear)
+            case 20: switchHeroWeapon(.heavyWarbow)
+            case 49: triggerHeroSkill(.breakthroughCharge)
+            case 14, 21: triggerHeroSkill(.ironBulwark)
+            case 15, 23: triggerHeroSkill(.grandWarCry)
+            case 35: toggleBattlePause()
+            case 0, 1, 2, 13, 123, 124, 125, 126: break
+            default: super.keyDown(with: event)
             }
         }
     }
@@ -2216,6 +2718,7 @@ public final class BattlefieldSKScene: SKScene {
             return
         }
         selectedSquadIds = ids
+        BattleAudioEngine.shared.play(.uiClick)
         let isDoubleTap = (lastGroupKeyNumber == groupNumber) && (now - lastGroupKeyPressTime < 0.38)
         lastGroupKeyNumber = groupNumber
         lastGroupKeyPressTime = now
@@ -2223,9 +2726,9 @@ public final class BattlefieldSKScene: SKScene {
             let sq = engine.squads[firstId]
             worldCamera.position = scenePoint(fromLogicX: sq.anchorX, logicY: sq.anchorY)
             clampCameraPosition()
-            onInteractionFeedback?("已选定并居中镜头至【第 \(groupNumber) 军团】（\(ids.count) 支编队）")
+            onInteractionFeedback?("已选定并聚焦镜头至【第 \(groupNumber) 军团】")
         } else {
-            onInteractionFeedback?("已选定【第 \(groupNumber) 军团 (F\(groupNumber))】（再按一次居中镜头）")
+            onInteractionFeedback?("已选定【第 \(groupNumber) 军团 (F\(groupNumber))】（双击聚焦镜头）")
         }
         pushUiSyncNow()
     }
@@ -2244,12 +2747,12 @@ public final class BattlefieldSKScene: SKScene {
 
     private static func groupNumberForFunctionKey(_ keyCode: UInt16) -> Int? {
         switch keyCode {
-        case 122: return 1 // F1
-        case 120: return 2 // F2
-        case 99:  return 3 // F3
-        case 118: return 4 // F4
-        case 96:  return 5 // F5
-        case 97:  return 6 // F6
+        case 122: return 1
+        case 120: return 2
+        case 99:  return 3
+        case 118: return 4
+        case 96:  return 5
+        case 97:  return 6
         default:  return nil
         }
     }

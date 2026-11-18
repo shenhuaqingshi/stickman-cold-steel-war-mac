@@ -222,18 +222,122 @@ public struct BattleFieldTrap: Sendable, Codable, Equatable, Hashable, Identifia
     }
 }
 
-/// 战场大营与攻防城工事类别
-public enum SiegeStructureKind: String, CaseIterable, Sendable, Codable, Hashable {
-    case baseCamp = "base_camp"           // 本阵大营（含随军粮仓与医帐）
+/// 战场大营、攻防城工事与《指尖帝国》RTS 可营建基地建筑类别
+public enum SiegeStructureKind: String, CaseIterable, Sendable, Codable, Hashable, Identifiable {
+    case baseCamp = "base_camp"           // 主城议政厅 / 本阵大营（含随军粮仓、时代演进与医帐）
     case mainGate = "main_gate"           // 瓮城正门（可被巨斧破甲劈砍或投石轰击）
     case sideSallyGate = "side_sally"     // 侧门暗道（守军轻骑出城烧投石车通道）
     case wallSegment = "wall_segment"     // 城墙段（投石车可轰塌制造缺口）
-    case arrowTower = "arrow_tower"       // 守御箭塔（自动索敌抛射箭矢）
+    case arrowTower = "arrow_tower"       // 警戒箭塔（自动索敌抛射箭矢，玩家亦可在前线营建！）
     case woodenCheval = "wooden_cheval"   // 拒马木栅（反制冲锋铁骑）
     case siegeLadder = "siege_ladder"     // 登城云梯（步兵攀城通道）
+    // 《指尖帝国》×《罗马帝国》RTS 基地营建扩展建筑
+    case houseQuarter = "house_quarter"   // 军屯民居（人口上限 +16，微量民税）
+    case imperialFarm = "imperial_farm"   // 屯田农庄（持续产出粮草 +3.4/s，彻底支撑持久大战）
+    case barracks = "barracks"            // 步兵军营（步兵/长柄训练提速 +35% 并可前推集结）
+    case archeryRange = "archery_range"   // 神机靶场（远程弓弩训练提速 +35%）
+    case stables = "stables"              // 皇家马厩（时代 II 解锁，铁骑训练提速 +35%）
+    case blacksmith = "blacksmith"        // 军械铁匠铺（解锁锋刃/重甲/羽箭三系 1~3 级锻造）
+    case siegeWorkshop = "siege_workshop" // 攻城器械所（时代 III 解锁，器械建造提速 +40%、拆城 +15%）
+
+    public var id: String { rawValue }
+
+    /// 玩家在 RTS 面板可主动点击建造的 8 类帝国建筑列表
+    public static let constructibleBuildings: [SiegeStructureKind] = [
+        .houseQuarter, .imperialFarm, .barracks, .archeryRange,
+        .blacksmith, .stables, .arrowTower, .siegeWorkshop
+    ]
+
+    public var displayName: String {
+        switch self {
+        case .baseCamp: return "军政主城"
+        case .mainGate: return "瓮城正门"
+        case .sideSallyGate: return "侧门暗道"
+        case .wallSegment: return "巨石城墙"
+        case .arrowTower: return "警戒箭塔"
+        case .woodenCheval: return "拒马木栅"
+        case .siegeLadder: return "登城云梯"
+        case .houseQuarter: return "军屯民居"
+        case .imperialFarm: return "屯田农庄"
+        case .barracks: return "步兵军营"
+        case .archeryRange: return "神机靶场"
+        case .stables: return "皇家马厩"
+        case .blacksmith: return "军械铁匠铺"
+        case .siegeWorkshop: return "攻城器械所"
+        }
+    }
+
+    public var requiredAge: ImperialAge {
+        switch self {
+        case .stables, .arrowTower:
+            return .age2IronCity
+        case .siegeWorkshop:
+            return .age3Imperial
+        default:
+            return .age1Bronze
+        }
+    }
+
+    public var buildCost: ResourceCost? {
+        switch self {
+        case .houseQuarter: return ResourceCost(gold: 0, wood: 50, grain: 0)
+        case .imperialFarm: return ResourceCost(gold: 15, wood: 70, grain: 0)
+        case .barracks: return ResourceCost(gold: 40, wood: 110, grain: 0)
+        case .archeryRange: return ResourceCost(gold: 50, wood: 115, grain: 0)
+        case .blacksmith: return ResourceCost(gold: 70, wood: 95, grain: 0)
+        case .stables: return ResourceCost(gold: 75, wood: 125, grain: 0)
+        case .arrowTower: return ResourceCost(gold: 85, wood: 110, grain: 0)
+        case .siegeWorkshop: return ResourceCost(gold: 110, wood: 160, grain: 0)
+        default: return nil
+        }
+    }
+
+    public var buildTimeSec: Double {
+        switch self {
+        case .houseQuarter: return 6.0
+        case .imperialFarm: return 7.5
+        case .barracks, .archeryRange, .blacksmith: return 10.0
+        case .stables, .arrowTower: return 12.0
+        case .siegeWorkshop: return 15.0
+        default: return 8.0
+        }
+    }
+
+    public var defaultFootprint: (width: Double, height: Double, hp: Double, armor: Double) {
+        switch self {
+        case .baseCamp: return (168.0, 290.0, 2800.0, 44.0)
+        case .houseQuarter: return (78.0, 68.0, 680.0, 22.0)
+        case .imperialFarm: return (112.0, 90.0, 720.0, 16.0)
+        case .barracks: return (118.0, 94.0, 1400.0, 32.0)
+        case .archeryRange: return (116.0, 90.0, 1250.0, 28.0)
+        case .stables: return (124.0, 96.0, 1450.0, 32.0)
+        case .blacksmith: return (98.0, 84.0, 1300.0, 36.0)
+        case .siegeWorkshop: return (130.0, 102.0, 1550.0, 36.0)
+        case .arrowTower: return (78.0, 78.0, 1150.0, 40.0)
+        case .mainGate: return (72.0, 220.0, 1850.0, 32.0)
+        case .sideSallyGate: return (68.0, 150.0, 1150.0, 36.0)
+        case .wallSegment: return (72.0, 660.0, 2300.0, 58.0)
+        case .woodenCheval: return (42.0, 95.0, 460.0, 18.0)
+        case .siegeLadder: return (44.0, 80.0, 900.0, 20.0)
+        }
+    }
+
+    public var roleSummary: String {
+        switch self {
+        case .houseQuarter: return "人口上限 +16 · 民税 +0.35金/s"
+        case .imperialFarm: return "持续产粮 +3.4粮/s · 永续后勤"
+        case .barracks: return "步兵/长枪训练提速 +35% · 前推兵站"
+        case .archeryRange: return "弓弩远程训练提速 +35%"
+        case .blacksmith: return "解锁百炼锋刃/重甲/羽箭 1~3 级锻造"
+        case .stables: return "机动铁骑训练提速 +35%（需时代 II）"
+        case .arrowTower: return "自动射杀 390px 内来犯敌军（需时代 II）"
+        case .siegeWorkshop: return "重器建造提速 +40% · 破城 +15%（需时代 III）"
+        default: return displayName
+        }
+    }
 }
 
-/// 本阵大营、城门、城墙与箭塔实体
+/// 本阵大营、城门、城墙、箭塔与 RTS 基地建筑实体
 public struct SiegeStructureEntity: Sendable, Codable, Equatable, Hashable, Identifiable {
     public let id: Int
     public let side: BattleSide
@@ -249,6 +353,10 @@ public struct SiegeStructureEntity: Sendable, Codable, Equatable, Hashable, Iden
     public var isDestroyed: Bool
     /// 本阵大营随军粮车是否已被奇袭劫掠（单次可夺取 150 应急粮草，苍狼翻倍）
     public var granaryLooted: Bool
+    /// 是否正在夯土施工建造中（0.0 ~ 1.0 进度）
+    public var isUnderConstruction: Bool
+    public var constructionProgress: Double
+    public var totalBuildTimeSec: Double
 
     public init(
         id: Int,
@@ -262,7 +370,10 @@ public struct SiegeStructureEntity: Sendable, Codable, Equatable, Hashable, Iden
         armor: Double = 35.0,
         attackCooldown: Double = 0.0,
         isDestroyed: Bool = false,
-        granaryLooted: Bool = false
+        granaryLooted: Bool = false,
+        isUnderConstruction: Bool = false,
+        constructionProgress: Double = 1.0,
+        totalBuildTimeSec: Double = 8.0
     ) {
         self.id = id
         self.side = side
@@ -272,11 +383,14 @@ public struct SiegeStructureEntity: Sendable, Codable, Equatable, Hashable, Iden
         self.width = width
         self.height = height
         self.hp = hp
-        self.maxHp = hp
+        self.maxHp = isUnderConstruction ? max(hp, kind.defaultFootprint.hp) : hp
         self.armor = armor
         self.attackCooldown = attackCooldown
         self.isDestroyed = isDestroyed
         self.granaryLooted = granaryLooted
+        self.isUnderConstruction = isUnderConstruction
+        self.constructionProgress = constructionProgress
+        self.totalBuildTimeSec = max(1.0, totalBuildTimeSec)
     }
 }
 
@@ -340,6 +454,11 @@ public struct BattleSquadState: Sendable, Equatable, Identifiable {
     public var aliveCount: Int
     /// 是否为沙漠商盟纯金币雇佣军团
     public var isMercenary: Bool
+    /// 军团实战老兵星级（0 新锐 -> 1 百战 ★ -> 2 精锐 ★★ -> 3 传奇鹰旗卫 ★★★）
+    public var veterancyStars: Int
+    public var totalKills: Int
+    /// 《罗马全面战争》右键拉阵线横向展开系数 (0.55 ~ 2.20)
+    public var lineSpreadMultiplier: Double
 
     public init(
         id: Int,
@@ -353,7 +472,8 @@ public struct BattleSquadState: Sendable, Equatable, Identifiable {
         anchorY: Double,
         facingRadians: Double,
         morale: Double = GameConstants.moraleBase,
-        isMercenary: Bool = false
+        isMercenary: Bool = false,
+        veterancyStars: Int = 0
     ) {
         self.id = id
         self.side = side
@@ -383,6 +503,9 @@ public struct BattleSquadState: Sendable, Equatable, Identifiable {
         self.initialCount = 0
         self.aliveCount = 0
         self.isMercenary = isMercenary
+        self.veterancyStars = max(0, min(3, veterancyStars))
+        self.totalKills = 0
+        self.lineSpreadMultiplier = 1.0
     }
 
     /// 阵型属性修正是否生效（执旗官被斩 12s 内或处于溃逃态时阵型加成失效）
@@ -462,6 +585,11 @@ public struct SoldierEntity: Sendable, Equatable {
     public var carryingResourceKind: ResourceNodeKind?
     public var carryingAmount: Double
     public var gatherProgressTimer: Double
+    /// 工兵当前奉命前往夯土建造的目标建筑下标（-1 表示无营建任务）
+    public var buildTargetStructureId: Int
+    /// 单兵累积斩获与老兵星级（0~3）
+    public var killsCount: Int
+    public var veterancyStars: Int
     /// 是否处于对方战争迷雾可见视野内
     public var isVisibleToOpponent: Bool
 
@@ -517,6 +645,9 @@ public struct SoldierEntity: Sendable, Equatable {
             carryingResourceKind: nil,
             carryingAmount: 0.0,
             gatherProgressTimer: 0.0,
+            buildTargetStructureId: -1,
+            killsCount: 0,
+            veterancyStars: 0,
             isVisibleToOpponent: true
         )
     }
@@ -740,7 +871,17 @@ public struct SideEconomyAndMoraleState: Sendable, Equatable {
 
     public var popUsed: Int
     public var popCap: Int
+    public var basePopCap: Int
     public var trainingQueue: [TrainingQueueItem]
+
+    /// 《指尖帝国》×《罗马帝国》四时代演进与铁匠铺三系锻造等级
+    public var currentAge: ImperialAge
+    public var advancingToAge: ImperialAge?
+    public var ageAdvanceRemainingSec: Double
+    public var ageAdvanceTotalSec: Double
+    public var meleeForgeLevel: Int
+    public var armorTemperLevel: Int
+    public var fletchingLevel: Int
 
     /// 战后结算精确统计项
     public var totalInitialSoldiers: Int
@@ -757,7 +898,8 @@ public struct SideEconomyAndMoraleState: Sendable, Equatable {
         wood: Int = GameConstants.battleInitWood,
         grain: Double = GameConstants.battleInitGrain,
         popCap: Int = GameConstants.defaultArmyPopCap,
-        supplyMoraleCeiling: Double = GameConstants.moraleMax
+        supplyMoraleCeiling: Double = GameConstants.moraleMax,
+        initialAge: ImperialAge = .age1Bronze
     ) {
         self.side = side
         self.faction = faction
@@ -775,8 +917,16 @@ public struct SideEconomyAndMoraleState: Sendable, Equatable {
         self.supplyMoraleCeiling = supplyMoraleCeiling
         self.commandParalysisTimer = 0.0
         self.popUsed = 0
-        self.popCap = popCap
+        self.basePopCap = popCap
+        self.popCap = popCap + initialAge.popCapBonus
         self.trainingQueue = []
+        self.currentAge = initialAge
+        self.advancingToAge = nil
+        self.ageAdvanceRemainingSec = 0.0
+        self.ageAdvanceTotalSec = 1.0
+        self.meleeForgeLevel = 0
+        self.armorTemperLevel = 0
+        self.fletchingLevel = 0
         self.totalInitialSoldiers = 0
         self.killedCount = 0
         self.mercenaryDesertedCount = 0

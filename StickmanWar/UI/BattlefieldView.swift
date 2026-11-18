@@ -1,16 +1,26 @@
+import AppKit
 import SpriteKit
 import SwiftUI
 
-/// 核心路由 4：冷兵器大战场与主帅亲自上阵实时交锋页（承载 SpriteKit 4800×2400 / 5600×2600 真刀真枪模拟与 4Hz 节流双视角指挥台）
+/// 核心路由 4：帝国冷兵器大战场实时交锋与《指尖帝国 × 罗马帝国》RTS 营建指挥台
+/// 包含：顶部时代演进与资源状态带、中央高清 SpriteKit 战场、右下交互式战术雷达小地图、底部三区（营建锻造 / 军团募兵 / 古战阵型军令）指挥台。
 public struct BattlefieldView: View {
+    private enum LeftDeckTab: String, CaseIterable, Identifiable {
+        case buildings = "帝国营建"
+        case blacksmith = "铁匠锻造"
+        var id: String { rawValue }
+    }
+
     @Bindable var router: AppRouter
 
     @State private var sceneInstance: BattlefieldSKScene?
     @State private var syncPacket: BattlefieldUiSyncPacket?
-    @State private var interactionTip: String = "大战已启：左键框选分队，右键点地面机动/点敌军集火，[Space] 暂停布阵，随时按 [Tab] 提刀上阵杀敌！"
+    @State private var interactionTip: String = "号角已鸣：左键框选军团，【按住右键拖拽】拉设古罗马战线，左下营建农庄/兵营/铁匠铺，按 [Tab] 提刀上阵！"
     @State private var showEscapeMenu: Bool = false
     @State private var concludedSummary: PostBattleSettlementSummary? = nil
     @State private var recruitUseShamoMerc: Bool = false
+    @State private var leftDeckTab: LeftDeckTab = .buildings
+    @State private var isAudioMuted: Bool = BattleAudioEngine.shared.isMuted
 
     private var hud: BattleHudSnapshot {
         syncPacket?.hud ?? BattleHudSnapshot()
@@ -26,34 +36,44 @@ public struct BattlefieldView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            topBattleHudBar
+            topImperialHudRibbon
 
             ZStack(alignment: .topLeading) {
                 if let scene = sceneInstance {
                     SpriteView(scene: scene)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    Color.black
+                    ImperialPalette.obsidianDeep
                 }
 
-                // 左上角轻量实时战况与 AI 黑板态势浮层
+                // 左上角轻量战场战报与文明态势浮窗
                 tacticalTelemetryOverlay
                     .padding(12)
 
-                // 终局胜负战果横幅浮层
+                // 右下角《指尖帝国 / 帝国时代》式实时交互战术雷达小地图
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        interactiveRadarMinimap
+                            .padding(12)
+                    }
+                }
+
                 if let finalSummary = concludedSummary {
                     battleConcludedOverlay(finalSummary)
                 }
 
-                // Esc 战场军务暂停菜单浮层
                 if showEscapeMenu && concludedSummary == nil {
                     escapeTacticalMenuOverlay
                 }
             }
 
-            bottomCommandDeck
+            bottomImperialCommandConsole
         }
+        .background(ImperialPalette.obsidianDeep)
         .onAppear {
+            BattleAudioEngine.shared.masterVolume = Float(router.userSettings.masterVolume * router.userSettings.sfxVolume)
             initializeOrSyncBattleScene(forceRecreate: false)
         }
         .onChange(of: router.pendingBattleDeployment.randomSeed) { _, _ in
@@ -62,11 +82,12 @@ public struct BattlefieldView: View {
             initializeOrSyncBattleScene(forceRecreate: true)
         }
         .onChange(of: router.userSettings) { _, updated in
+            BattleAudioEngine.shared.masterVolume = Float(updated.masterVolume * updated.sfxVolume)
             applyUserSettings(updated, to: sceneInstance)
         }
     }
 
-    // MARK: - 场景创建与回调绑定
+    // MARK: - 场景创建与绑定
 
     private func initializeOrSyncBattleScene(forceRecreate: Bool) {
         if sceneInstance == nil || forceRecreate {
@@ -112,460 +133,751 @@ public struct BattlefieldView: View {
         }
     }
 
-    // MARK: - 顶部 4Hz 节流战场态势栏
+    // MARK: - 顶部帝国资源、四时代演进、倍速与主帅亲征状态栏
 
-    private var topBattleHudBar: some View {
+    private var topImperialHudRibbon: some View {
         let mins = Int(hud.elapsedSeconds) / 60
         let secs = Int(hud.elapsedSeconds) % 60
         let timeStr = String(format: "%02d:%02d", mins, secs)
-        let siegeRemain = max(0, Int(router.pendingBattleDeployment.siegeHoldTargetSeconds - hud.elapsedSeconds))
-
-        let rationBadge: (text: String, color: Color) = {
-            switch hud.rationStage {
-            case .abundant: return ("粮 \(Int(hud.grain))", .orange)
-            case .warning: return ("⚠️ 余粮告警 \(Int(hud.grain))", .yellow)
-            case .hungry: return ("🟠 断粮饥饿(-0.8士气/s)", .orange)
-            case .starving: return ("🚨 饥溃崩盘(-1.8士气/s)", .red)
-            }
-        }()
-
-        let heroStateText: String = {
-            switch hud.heroVitalState {
-            case .healthyActive:
-                return "主帅 \(Int(hud.heroHp))/\(Int(hud.heroMaxHp))"
-            case .recoveringInCamp:
-                let rem = Int(syncPacket?.heroMedicalRemainingSec ?? 0)
-                return "⛺ 医帐包扎(\(rem)s·士气锁65)"
-            case .woundedWeakened:
-                return "⚠️ 主帅虚弱 \(Int(hud.heroHp))/\(Int(hud.heroMaxHp))"
-            case .fallenMartyred:
-                return "💀 主帅殉国"
-            }
-        }()
 
         return HStack(spacing: 10) {
-            Button("军务 (Esc)") {
+            // 军务菜单与时钟
+            Button {
                 toggleEscapeMenu()
+            } label: {
+                Label("军务", systemImage: "line.3.horizontal")
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .buttonStyle(ImperialBronzeButtonStyle(isCompact: true))
 
+            Text(timeStr)
+                .font(.system(.callout, design: .monospaced).bold())
+                .foregroundStyle(ImperialPalette.parchmentText)
+                .frame(width: 48)
+
+            // 四时代演进勋章与一键升级时代按钮
             HStack(spacing: 6) {
-                Text(timeStr)
-                    .font(.callout.monospacedDigit().bold())
-                if router.launchContext.scenarioType == .siegeDefense {
-                    Text("坚守余 \(siegeRemain)s")
-                        .font(.caption.monospacedDigit().bold())
-                        .foregroundStyle(.cyan)
+                Text("时代 \(hud.currentAge.romanNumeral)")
+                    .font(.caption.bold())
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(ImperialPalette.goldGradient))
+                    .foregroundStyle(ImperialPalette.obsidianDeep)
+
+                if let targetAge = hud.advancingToAge {
+                    HStack(spacing: 4) {
+                        ProgressView(value: hud.ageAdvanceProgress)
+                            .frame(width: 48)
+                            .tint(ImperialPalette.imperialGold)
+                        Text("演进 \(targetAge.romanNumeral) \(Int(hud.ageAdvanceProgress * 100))%")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(ImperialPalette.imperialGoldBright)
+                    }
+                } else if let nextAge = hud.currentAge.nextAge {
+                    let c = nextAge.advanceCost
+                    Button {
+                        sceneInstance?.triggerAgeAdvancement()
+                        sceneInstance?.focusResponder()
+                    } label: {
+                        Text("⬆ 升时代\(nextAge.romanNumeral) (金\(c.gold)/木\(c.wood))")
+                    }
+                    .buttonStyle(ImperialCrimsonButtonStyle(isCompact: true))
+                    .help("演进至【\(nextAge.displayName)】：全军攻击 +\(Int((nextAge.attackMultiplierBonus - 1.0) * 100))%、人口上限 +\(nextAge.popCapBonus)，解锁高阶马厩/箭塔/攻城所与铁匠科技")
+                } else {
+                    Text("巅峰霸业")
+                        .font(.caption2.bold())
+                        .foregroundStyle(ImperialPalette.imperialGoldBright)
                 }
             }
 
-            Divider().frame(height: 16)
+            Divider().frame(height: 20).overlay(ImperialPalette.bronzeBorder.opacity(0.4))
 
-            HStack(spacing: 10) {
-                Text("金 \(hud.gold)").foregroundStyle(.yellow)
-                Text("木 \(hud.wood)").foregroundStyle(.green)
-                Text(rationBadge.text).foregroundStyle(rationBadge.color)
+            // 金 / 木 / 粮 / 人口 四维帝国资源表
+            HStack(spacing: 11) {
+                resourcePill(symbol: "bitcoinsign.circle.fill", color: .yellow, label: "\(hud.gold)")
+                resourcePill(symbol: "tree.fill", color: .green, label: "\(hud.wood)")
+                resourcePill(
+                    symbol: "leaf.circle.fill",
+                    color: hud.rationStage == .abundant ? ImperialPalette.imperialGold : .red,
+                    label: "\(Int(hud.grain)) (\(rationStageShortLabel(hud.rationStage)))"
+                )
+                resourcePill(
+                    symbol: "person.3.fill",
+                    color: hud.playerPopUsed >= hud.playerPopCap ? .orange : .cyan,
+                    label: "\(hud.playerPopUsed)/\(hud.playerPopCap)"
+                )
             }
-            .font(.caption.monospacedDigit().bold())
 
-            Divider().frame(height: 16)
+            Spacer(minLength: 4)
 
-            HStack(spacing: 8) {
-                Text("我军 \(hud.playerAliveCount)（人口\(hud.playerPopUsed)/\(hud.playerPopCap)）")
-                    .foregroundStyle(.green)
-                Text("vs 敌 \(hud.enemyAliveCount)")
-                    .foregroundStyle(.red)
-                Text("士气 \(Int(hud.averagePlayerMorale))")
-                    .foregroundStyle(hud.averagePlayerMorale < 35 ? .red : .cyan)
-                Text(heroStateText)
-                    .foregroundStyle(hud.heroVitalState == .healthyActive ? .yellow : .orange)
+            // 空闲民夫定位 + 警戒钟
+            Button {
+                sceneInstance?.focusIdleOrNearestSapper()
+                sceneInstance?.focusResponder()
+            } label: {
+                Text("🔨 民夫\(hud.idleSapperCount > 0 ? "(\(hud.idleSapperCount)闲)" : "") [.]")
             }
-            .font(.caption.monospacedDigit().bold())
+            .buttonStyle(ImperialBronzeButtonStyle(isHighlighted: hud.idleSapperCount > 0, isCompact: true))
 
-            Spacer()
-
-            Button(hud.garrisonBellActive ? "🔔 解除警钟(B)" : "🔔 本阵警钟(B)") {
+            Button {
                 sceneInstance?.toggleGarrisonBell()
                 sceneInstance?.focusResponder()
+            } label: {
+                Text(hud.garrisonBellActive ? "🔔 解除警钟 [B]" : "🔔 警戒钟 [B]")
             }
-            .buttonStyle(.bordered)
-            .tint(hud.garrisonBellActive ? .red : .secondary)
-            .controlSize(.small)
+            .buttonStyle(ImperialBronzeButtonStyle(isHighlighted: hud.garrisonBellActive, isCompact: true))
 
-            let switchLabel: String = {
-                if hud.switchCooldownRemaining > 0.05 {
-                    return String(format: "视角冷却 %.1fs", hud.switchCooldownRemaining)
+            // 战斗节奏倍速切换 [0.5x | 1x | 1.5x | 2x]
+            HStack(spacing: 3) {
+                ForEach([0.5, 1.0, 1.5, 2.0], id: \.self) { spd in
+                    let curSpd = syncPacket?.simulationSpeed ?? 1.0
+                    Button("\(spd == 1.0 ? "1x" : (spd == 2.0 ? "2x" : String(format: "%.1fx", spd)))") {
+                        sceneInstance?.simulationSpeedMultiplier = spd
+                        BattleAudioEngine.shared.play(.uiClick)
+                        sceneInstance?.focusResponder()
+                    }
+                    .buttonStyle(ImperialBronzeButtonStyle(isHighlighted: abs(curSpd - spd) < 0.05, isCompact: true))
                 }
-                return hud.controlMode == .rtsCommander ? "⚔️ 亲自上阵 (Tab)" : "🗺 统帅全局 (Tab)"
-            }()
-            Button(switchLabel) {
-                _ = sceneInstance?.requestToggleControlMode()
-                sceneInstance?.focusResponder()
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .disabled(hud.heroVitalState == .recoveringInCamp || hud.heroVitalState == .fallenMartyred || hud.switchCooldownRemaining > 0.05)
 
-            let pauseKeyHint = hud.controlMode == .rtsCommander ? "Space" : "P"
-            Button(hud.isPaused ? "▶️ 继续(\(pauseKeyHint))" : "⏸ 暂停(\(pauseKeyHint))") {
+            // 音效开关与暂停
+            Button {
+                isAudioMuted.toggle()
+                BattleAudioEngine.shared.isMuted = isAudioMuted
+                sceneInstance?.focusResponder()
+            } label: {
+                Image(systemName: isAudioMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+            }
+            .buttonStyle(ImperialBronzeButtonStyle(isCompact: true))
+
+            Button {
                 sceneInstance?.toggleBattlePause()
                 sceneInstance?.focusResponder()
+            } label: {
+                Image(systemName: hud.isPaused ? "play.fill" : "pause.fill")
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .buttonStyle(ImperialBronzeButtonStyle(isHighlighted: hud.isPaused, isCompact: true))
+
+            // 灵魂双视角切换按钮：[Tab] 主帅提刀亲征
+            Button {
+                _ = sceneInstance?.requestToggleControlMode()
+                sceneInstance?.focusResponder()
+            } label: {
+                Text(hud.controlMode == .heroAction ? "🗺 切回统帅 [Tab]" : "⚔️ 主帅亲征 [Tab]")
+            }
+            .buttonStyle(ImperialCrimsonButtonStyle(isCompact: true))
+            .disabled(hud.heroVitalState == .recoveringInCamp || hud.heroVitalState == .fallenMartyred)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
-        .background(.bar)
+        .background(ImperialPalette.obsidianCard)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(ImperialPalette.bronzeBorder.opacity(0.55)).frame(height: 1)
+        }
     }
 
-    // MARK: - 左上角战术反馈与 AI 指挥黑板透视
+    private func resourcePill(symbol: String, color: Color, label: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: symbol)
+                .foregroundStyle(color)
+                .font(.caption)
+            Text(label)
+                .font(.caption.monospacedDigit().bold())
+                .foregroundStyle(ImperialPalette.parchmentText)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.42)))
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(ImperialPalette.bronzeBorder.opacity(0.30), lineWidth: 0.8))
+    }
+
+    private func rationStageShortLabel(_ stage: BattlefieldRationStage) -> String {
+        switch stage {
+        case .abundant: return "充沛"
+        case .warning: return "告急!"
+        case .hungry: return "断粮!"
+        case .starving: return "饥溃!!"
+        }
+    }
+
+    // MARK: - 左上角战报态势浮窗 & 右下角交互式战术雷达小地图
 
     private var tacticalTelemetryOverlay: some View {
-        let aiDesc: String = {
-            if let sp = syncPacket?.aiSiegePhase {
-                switch sp {
-                case .attackerArtilleryPrep: return "攻城阶段1·重器拆塔"
-                case .attackerMultiLadder: return "攻城阶段2·云梯破门"
-                case .attackerBreachExploit: return "攻城阶段3·铁骑突瓮城"
-                case .defenderWallFocusFire: return "守城阶段1·强弩点杀工兵"
-                case .defenderGatePlugPhalanx: return "守城阶段2·枪盾死堵城门"
-                case .defenderSallyDestroySiege: return "守城阶段3·侧门奇袭烧投石"
-                }
-            }
-            switch syncPacket?.aiDoctrine ?? .hammerAndAnvil {
-            case .hammerAndAnvil: return "锤砧两翼包抄"
-            case .highGroundHedgehog: return "高地刺猬防反"
-            case .feignedRetreatAmbush: return "诈败诱敌入伏"
-            case .reserveBreakthrough: return "总预备队决胜突击"
-            case .antiKiteEscort: return "反风筝单队驱离"
-            }
-        }()
+        let pCfg = FactionConfig.config(for: router.launchContext.playerFaction)
+        let eCfg = FactionConfig.config(for: router.launchContext.enemyFaction)
 
-        return VStack(alignment: .leading, spacing: 3) {
+        return VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 8) {
-                Text(hud.controlMode == .rtsCommander ? "【RTS 统帅视角】" : "【主帅英雄亲自上阵 · 斩敌 \(syncPacket?.heroKills ?? 0)】")
-                    .font(.caption.bold())
-                    .foregroundStyle(.yellow)
-                Text("敌帅条令：\(aiDesc)")
-                    .font(.caption2)
-                    .foregroundStyle(.cyan)
-                if let fervor = syncPacket?.bloodMoonFervorRemaining, fervor > 0 {
-                    Text("🩸 血月狂热 \(Int(fervor))s")
-                        .font(.caption2.bold())
-                        .foregroundStyle(.pink)
+                Circle().fill(Color(hex: pCfg?.primaryColorHex ?? "#C62828")).frame(width: 8, height: 8)
+                Text("\(pCfg?.name ?? "") \(hud.playerAliveCount)人 (士气\(Int(hud.averagePlayerMorale)))")
+                    .font(.caption.monospacedDigit().bold())
+                    .foregroundStyle(ImperialPalette.parchmentText)
+                Text("VS")
+                    .font(.caption2.bold())
+                    .foregroundStyle(ImperialPalette.imperialGold)
+                Circle().fill(Color(hex: eCfg?.primaryColorHex ?? "#1565C0")).frame(width: 8, height: 8)
+                Text("\(eCfg?.name ?? "") \(hud.enemyAliveCount)人 (时代\(hud.enemyCurrentAge.romanNumeral))")
+                    .font(.caption.monospacedDigit().bold())
+                    .foregroundStyle(ImperialPalette.parchmentText)
+            }
+
+            HStack(spacing: 10) {
+                Text("主帅 HP \(Int(hud.heroHp))/\(Int(hud.heroMaxHp))")
+                    .foregroundStyle(hud.heroVitalState == .recoveringInCamp ? .orange : ImperialPalette.jadeSupply)
+                Text("锻造：刃Lv.\(hud.meleeForgeLevel) · 甲Lv.\(hud.armorTemperLevel) · 箭Lv.\(hud.fletchingLevel)")
+                    .foregroundStyle(ImperialPalette.imperialGold)
+                if let packet = syncPacket, packet.bloodMoonFervorRemaining > 0.1 {
+                    Text("🩸 血月狂热 \(Int(packet.bloodMoonFervorRemaining))s")
+                        .foregroundStyle(.red)
                 }
             }
+            .font(.caption2.monospacedDigit())
+
             Text(interactionTip)
                 .font(.caption)
-                .foregroundStyle(.white)
+                .foregroundStyle(ImperialPalette.imperialGoldBright)
                 .lineLimit(2)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.68)))
+        .padding(.horizontal, 11)
+        .padding(.vertical, 8)
+        .frame(maxWidth: 530, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(ImperialPalette.obsidianDeep.opacity(0.82)))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(ImperialPalette.bronzeBorder.opacity(0.55), lineWidth: 1))
+        .allowsHitTesting(false)
     }
 
-    // MARK: - 底部双模式动态指挥台（含实时编队选择、全套 9 战术指令、本阵增援训练与英雄战技冷却）
+    private var interactiveRadarMinimap: some View {
+        let mapW: CGFloat = 196
+        let mapH: CGFloat = 104
+        let dots = syncPacket?.minimapDots ?? []
+        let camCX = syncPacket?.cameraNormCenterX ?? 0.5
+        let camCY = syncPacket?.cameraNormCenterY ?? 0.5
+        let camNW = syncPacket?.cameraNormWidth ?? 0.3
+        let camNH = syncPacket?.cameraNormHeight ?? 0.3
 
-    private var bottomCommandDeck: some View {
-        VStack(spacing: 6) {
+        return VStack(alignment: .trailing, spacing: 3) {
+            Text("战术沙盘雷达（点击/拖拽跳镜）")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(ImperialPalette.parchmentMuted)
+
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(Color(red: 0.10, green: 0.13, blue: 0.09).opacity(0.92))
+
+                Canvas { ctx, sz in
+                    // 中路古道参考线
+                    var road = Path()
+                    road.move(to: CGPoint(x: 8, y: sz.height * 0.5))
+                    road.addLine(to: CGPoint(x: sz.width - 8, y: sz.height * 0.5))
+                    ctx.stroke(road, with: .color(Color.brown.opacity(0.45)), lineWidth: 2)
+
+                    for d in dots {
+                        let px = CGFloat(d.normX) * sz.width
+                        let py = CGFloat(d.normY) * sz.height
+                        if d.isResource {
+                            let rect = CGRect(x: px - 2.2, y: py - 2.2, width: 4.4, height: 4.4)
+                            ctx.fill(Path(ellipseIn: rect), with: .color(.yellow.opacity(0.85)))
+                        } else if d.isBuilding {
+                            let rect = CGRect(x: px - 3.5, y: py - 3.5, width: 7.0, height: 7.0)
+                            ctx.fill(Path(rect), with: .color(d.isPlayer ? .green : .red))
+                        } else {
+                            let rect = CGRect(x: px - 2.8, y: py - 2.8, width: 5.6, height: 5.6)
+                            ctx.fill(Path(ellipseIn: rect), with: .color(d.isPlayer ? .cyan : .orange))
+                        }
+                    }
+
+                    let vw = max(18, CGFloat(camNW) * sz.width)
+                    let vh = max(14, CGFloat(camNH) * sz.height)
+                    let vx = min(sz.width - vw, max(0, CGFloat(camCX) * sz.width - vw * 0.5))
+                    let vy = min(sz.height - vh, max(0, CGFloat(camCY) * sz.height - vh * 0.5))
+                    ctx.stroke(Path(CGRect(x: vx, y: vy, width: vw, height: vh)), with: .color(.white.opacity(0.9)), lineWidth: 1.3)
+                }
+                .frame(width: mapW, height: mapH)
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { val in
+                            let nx = Double(val.location.x / mapW)
+                            let ny = Double(val.location.y / mapH)
+                            sceneInstance?.jumpCameraToNormalized(normX: nx, normY: ny)
+                        }
+                        .onEnded { _ in
+                            sceneInstance?.focusResponder()
+                        }
+                )
+            }
+            .frame(width: mapW, height: mapH)
+            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(ImperialPalette.imperialGold.opacity(0.70), lineWidth: 1.2))
+            .shadow(color: .black.opacity(0.5), radius: 5)
+        }
+    }
+
+    // MARK: - 底部三区帝国指挥台（左：指尖营建&铁匠科技 | 中：军团鹰旗与募兵队列 | 右：五阵型与九军令 / 主帅战技）
+
+    private var bottomImperialCommandConsole: some View {
+        HStack(alignment: .top, spacing: 12) {
             if hud.controlMode == .rtsCommander {
-                // 第一行：我方场上分队实时状态卡片 + 本阵增援招募菜单
-                HStack(spacing: 8) {
-                    Button("全选(~)") {
-                        sceneInstance?.selectAllCombatSquads()
-                        sceneInstance?.focusResponder()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                leftConstructionAndForgePanel
+                    .frame(width: 340)
 
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            let selSet = Set(syncPacket?.selectedSquadIds ?? [])
-                            ForEach(Array((syncPacket?.playerSquads ?? []).enumerated()), id: \.element.id) { idx, sq in
-                                if sq.aliveCount > 0 {
-                                    let isSel = selSet.contains(sq.id)
-                                    Button {
-                                        sceneInstance?.selectSingleSquad(sq.id, centerCamera: isSel)
-                                        sceneInstance?.focusResponder()
-                                    } label: {
-                                        HStack(spacing: 4) {
-                                            Text("[F\(min(6, idx + 1))] \(sq.unitName)×\(sq.aliveCount)")
-                                                .font(.caption2.bold())
-                                            Text(sq.isRouting ? "🏳️溃" : "士\(Int(sq.morale))")
-                                                .font(.caption2.monospacedDigit())
-                                                .foregroundStyle(sq.isRouting ? .red : (sq.morale < 40 ? .yellow : .green))
-                                        }
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 4)
-                                        .background(
-                                            RoundedRectangle(cornerRadius: 5)
-                                                .fill(isSel ? Color.accentColor.opacity(0.28) : Color.secondary.opacity(0.14))
-                                        )
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 5)
-                                                .stroke(isSel ? Color.yellow : Color.clear, lineWidth: 1.4)
-                                        )
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                        }
-                    }
+                Divider().frame(height: 146).overlay(ImperialPalette.bronzeBorder.opacity(0.35))
 
-                    Spacer()
+                centerCohortsAndRecruitPanel
+                    .frame(maxWidth: .infinity)
 
-                    if router.launchContext.playerFaction == .wulin {
-                        Menu("🌲 布设陷阱(25木)") {
-                            Button("部署绊马索（坠马眩晕敌骑 3s）") {
-                                sceneInstance?.deployWulinTrap(.tripwire)
-                                sceneInstance?.focusResponder()
-                            }
-                            Button("部署尖刺陷坑（穿甲毒伤减速）") {
-                                sceneInstance?.deployWulinTrap(.spikePit)
-                                sceneInstance?.focusResponder()
-                            }
-                        }
-                        .controlSize(.small)
-                    }
+                Divider().frame(height: 146).overlay(ImperialPalette.bronzeBorder.opacity(0.35))
 
-                    if router.launchContext.playerFaction == .shamo {
-                        Toggle("纯金雇兵", isOn: $recruitUseShamoMerc)
-                            .toggleStyle(.checkbox)
-                            .font(.caption2)
-                    }
-
-                    Menu("⛺ 本阵招募增援 (队列 \(syncPacket?.trainingQueueCount ?? 0))") {
-                        ForEach(legalRecruitUnits) { u in
-                            Button("\(u.name)（金\(u.cost.gold)/木\(u.cost.wood)/粮\(u.cost.grain) · 人口\(u.popCap)）") {
-                                sceneInstance?.recruitReinforcement(
-                                    unitType: u.id,
-                                    useMercenaryGold: router.launchContext.playerFaction == .shamo && recruitUseShamoMerc
-                                )
-                                sceneInstance?.focusResponder()
-                            }
-                        }
-                    }
-                    .controlSize(.small)
-                }
-
-                // 第二行：4 阵型 + 9 战术指令 + 复位镜头
-                HStack(spacing: 6) {
-                    Text("阵型:").font(.caption2.bold())
-                    ForEach(FormationType.allCases) { f in
-                        Button("[\(f.shortcutHint)]\(f.displayName)") {
-                            sceneInstance?.applyFormationToSelection(f)
-                            sceneInstance?.focusResponder()
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-
-                    Divider().frame(height: 16)
-
-                    Text("军令:").font(.caption2.bold())
-                    ForEach(TacticalOrder.allCases) { order in
-                        Button("[\(order.rtsShortcutKey)]\(order.displayName)") {
-                            sceneInstance?.applyTacticalOrderToSelection(order)
-                            sceneInstance?.focusResponder()
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-
-                    Spacer()
-
-                    Button("居中镜头") {
-                        sceneInstance?.resetCameraToCenter()
-                        sceneInstance?.focusResponder()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
+                rightFormationsAndTacticsPanel
+                    .frame(width: 390)
             } else {
-                // 亲自上阵英雄模式专属动作武器栏与实时战技冷却条
-                HStack(spacing: 10) {
-                    Text("随身兵刃:").font(.caption.bold())
-                    ForEach(Array(HeroWeaponType.allCases.enumerated()), id: \.element.id) { idx, weapon in
-                        let quiverInfo = weapon == .heavyWarbow ? " (\(hud.heroRemainingArrows)/\(GameConstants.heroWarbowQuiverCap)箭)" : ""
-                        Button("[\(idx + 1)] \(weapon.displayName)\(quiverInfo)") {
-                            sceneInstance?.switchHeroWeapon(weapon)
-                            sceneInstance?.focusResponder()
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(hud.heroActiveWeapon == weapon ? .accentColor : .secondary)
-                        .controlSize(.small)
-                    }
-
-                    Divider().frame(height: 18)
-
-                    let cd1 = syncPacket?.heroBreakthroughCd ?? 0.0
-                    Button(cd1 > 0.05 ? String(format: "[Space] 破阵突击 (%.1fs)", cd1) : "[Space] 破阵突击 (就绪)") {
-                        sceneInstance?.triggerHeroSkill(.breakthroughCharge)
-                        sceneInstance?.focusResponder()
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(cd1 <= 0.05 ? .orange : .secondary)
-                    .disabled(cd1 > 0.05)
-                    .controlSize(.small)
-
-                    let cd2 = syncPacket?.heroBulwarkCd ?? 0.0
-                    Button(cd2 > 0.05 ? String(format: "[E] 铁壁横戈 (%.1fs)", cd2) : "[E] 铁壁横戈 (就绪)") {
-                        sceneInstance?.triggerHeroSkill(.ironBulwark)
-                        sceneInstance?.focusResponder()
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(cd2 <= 0.05 ? .cyan : .secondary)
-                    .disabled(cd2 > 0.05)
-                    .controlSize(.small)
-
-                    let cd3 = syncPacket?.heroWarCryCd ?? 0.0
-                    Button(cd3 > 0.05 ? String(format: "[R] 三军战吼 (%.1fs)", cd3) : "[R] 三军战吼 (+18士气·唤醒溃军)") {
-                        sceneInstance?.triggerHeroSkill(.grandWarCry)
-                        sceneInstance?.focusResponder()
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(cd3 <= 0.05 ? .yellow : .secondary)
-                    .disabled(cd3 > 0.05)
-                    .controlSize(.small)
-
-                    Spacer()
-
-                    Text("WASD/方向键走位 · 鼠标瞄准 · 左键攻/蓄射 · 右键0.25s弹反")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
+                heroActionConsolePanel
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.bar)
-    }
-
-    // MARK: - 终局胜负战果浮层与 Esc 战场军务菜单浮层
-
-    private func battleConcludedOverlay(_ summary: PostBattleSettlementSummary) -> some View {
-        let title: String = {
-            switch summary.outcomeReason {
-            case .enemyBaseDestroyed: return "🏆 大捷 · 攻破敌军本阵大营！"
-            case .enemyArmyRouted: return "🏆 大捷 · 敌军全线崩溃溃逃！"
-            case .siegeDefenseHeld: return "🛡 守城大捷 · 雄关屹立不倒！"
-            case .playerCommanderMartyred: return "💔 败北 · 主帅阵前殉国 / 本阵失守"
-            case .playerArmyRouted: return "🏳️ 惜败 · 我军士气崩溃退守"
-            case .truceNegotiated: return "🤝 阵前停火 · 两军罢兵休战"
-            case .ongoing: return "战局结算"
-            }
-        }()
-
-        return ZStack {
-            Color.black.opacity(0.55)
-            VStack(spacing: 14) {
-                Text(title)
-                    .font(.system(size: 26, weight: .heavy))
-                    .foregroundStyle(summary.isVictory ? .yellow : .orange)
-
-                Text("斩敌 \(summary.enemyKilled) · 俘虏 \(summary.capturedPrisoners) · 我军阵亡 \(summary.playerKilled)（医帐救回伤兵 +\(summary.playerWoundedRecovered)）")
-                    .font(.callout.monospacedDigit())
-                    .foregroundStyle(.white)
-
-                Text("缴获物资：金 +\(summary.lootedGold) / 木 +\(summary.lootedWood) / 粮 +\(summary.lootedGrain) · 主帅历练 +\(summary.commanderExpGained) EXP")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-
-                Button("检阅完整军功战报 · 进入战后结算页 ›") {
-                    router.completeBattleAndShowResult(summary)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-            }
-            .padding(28)
-            .background(RoundedRectangle(cornerRadius: 12).fill(.regularMaterial))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.yellow.opacity(0.5), lineWidth: 1.5))
+        .padding(.vertical, 9)
+        .frame(height: 166)
+        .background(ImperialPalette.obsidianCard)
+        .overlay(alignment: .top) {
+            Rectangle().fill(ImperialPalette.imperialGold.opacity(0.50)).frame(height: 1.2)
         }
     }
 
-    private var escapeTacticalMenuOverlay: some View {
-        ZStack {
-            Color.black.opacity(0.52)
-            VStack(spacing: 12) {
-                Text("帅帐军务暂停菜单")
-                    .font(.title3.bold())
-
-                Button("继续战斗 (Esc)") {
-                    toggleEscapeMenu()
+    // 左区：指尖帝国式基地营建 + 铁匠铺三系攻防锻造
+    private var leftConstructionAndForgePanel: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                ForEach(LeftDeckTab.allCases) { tab in
+                    Button(tab.rawValue) {
+                        leftDeckTab = tab
+                        BattleAudioEngine.shared.play(.uiClick)
+                        sceneInstance?.focusResponder()
+                    }
+                    .buttonStyle(ImperialBronzeButtonStyle(isHighlighted: leftDeckTab == tab, isCompact: true))
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+                Spacer()
+                if syncPacket?.pendingBuildKind != nil {
+                    Button("取消选址") {
+                        sceneInstance?.cancelPendingBuildPlacement()
+                        sceneInstance?.focusResponder()
+                    }
+                    .buttonStyle(ImperialCrimsonButtonStyle(isCompact: true))
+                } else {
+                    Text("Shift+点直接建")
+                        .font(.system(size: 10))
+                        .foregroundStyle(ImperialPalette.parchmentMuted)
+                }
+            }
 
-                if router.launchContext.entryMode == .campaign {
-                    Button("派遣阵前使者赔款 200 金请求停火") {
-                        let offer = PeaceOfferTerms(
-                            proposer: router.launchContext.playerFaction,
-                            target: router.launchContext.enemyFaction,
-                            goldIndemnity: min(200, router.campaignEngine.factionState(for: router.launchContext.playerFaction).gold),
-                            grainTributePerTurn: 15,
-                            cededNodeIds: [],
-                            truceTurns: 5
-                        )
-                        let outcome = router.campaignEngine.proposePeaceOffer(offer)
-                        switch outcome {
-                        case .accepted:
-                            showEscapeMenu = false
-                            if let summary = sceneInstance?.concludeBattleByTruceAndSummarize() {
-                                router.completeBattleAndShowResult(summary)
+            if leftDeckTab == .buildings {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 5), count: 4), spacing: 5) {
+                    ForEach(SiegeStructureKind.constructibleBuildings) { kind in
+                        let cost = kind.buildCost ?? ResourceCost(gold: 0, wood: 0, grain: 0)
+                        let locked = hud.currentAge < kind.requiredAge
+                        let isPicking = syncPacket?.pendingBuildKind == kind
+                        Button {
+                            let shiftPressed = NSEvent.modifierFlags.contains(.shift)
+                            sceneInstance?.beginOrAutoConstructBuilding(kind, quickAutoPlace: shiftPressed)
+                            sceneInstance?.focusResponder()
+                        } label: {
+                            VStack(spacing: 2) {
+                                Text(kind.displayName)
+                                    .font(.system(size: 11, weight: .bold))
+                                    .lineLimit(1)
+                                Text(locked ? "需时代\(kind.requiredAge.romanNumeral)" : "金\(cost.gold)·木\(cost.wood)")
+                                    .font(.system(size: 9.5, design: .monospaced))
+                                    .foregroundStyle(locked ? .orange : ImperialPalette.parchmentMuted)
                             }
-                        case .counterOffer(_, let counter):
-                            interactionTip = "敌帅索要更高停火筹码：赔金 \(counter.goldIndemnity)、岁粮 \(counter.grainTributePerTurn)/回合（可在大地图外交台细谈）"
-                            toggleEscapeMenu()
-                        case .rejectedBreakdown(_, let reason):
-                            interactionTip = "阵前求和被拒（敌获士气激励）：\(reason)"
-                            toggleEscapeMenu()
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 5)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(isPicking ? ImperialPalette.imperialGold.opacity(0.32) : ImperialPalette.obsidianElevated)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .strokeBorder(isPicking ? ImperialPalette.imperialGoldBright : ImperialPalette.bronzeBorder.opacity(0.45), lineWidth: 1)
+                            )
+                            .opacity(locked ? 0.58 : 1.0)
+                        }
+                        .buttonStyle(.plain)
+                        .help("\(kind.displayName)：\(kind.roleSummary)（点击后在战场左键落盘，按住 Shift 点击可自动选址建造）")
+                    }
+                }
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(BlacksmithUpgradeTrack.allCases) { track in
+                        let lvl: Int = {
+                            switch track {
+                            case .meleeForging: return hud.meleeForgeLevel
+                            case .armorTempering: return hud.armorTemperLevel
+                            case .fletchingcraft: return hud.fletchingLevel
+                            }
+                        }()
+                        let nextCost = track.cost(forTargetLevel: min(3, lvl + 1))
+                        HStack(spacing: 8) {
+                            Image(systemName: track.iconSymbol)
+                                .foregroundStyle(ImperialPalette.imperialGoldBright)
+                                .frame(width: 16)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("\(track.displayName) Lv.\(lvl)/3")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(ImperialPalette.parchmentText)
+                                Text(track.summary(atLevel: max(1, lvl)))
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(ImperialPalette.parchmentMuted)
+                            }
+                            Spacer()
+                            if lvl < 3 {
+                                Button("锻造 (金\(nextCost.gold)/木\(nextCost.wood))") {
+                                    sceneInstance?.triggerBlacksmithUpgrade(track)
+                                    sceneInstance?.focusResponder()
+                                }
+                                .buttonStyle(ImperialBronzeButtonStyle(isHighlighted: true, isCompact: true))
+                            } else {
+                                Text("已满级")
+                                    .font(.caption2.bold())
+                                    .foregroundStyle(ImperialPalette.jadeSupply)
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.32)))
+                    }
+                }
+            }
+        }
+    }
+
+    // 中区：现役军团鹰旗卡 + 募兵与实时生产队列
+    private var centerCohortsAndRecruitPanel: some View {
+        let squads = syncPacket?.playerSquads.filter { $0.aliveCount > 0 } ?? []
+        let selectedSet = Set(syncPacket?.selectedSquadIds ?? [])
+        let queueItems = syncPacket?.trainingQueueItems ?? []
+
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text("现役军团 (\(squads.count))")
+                    .font(.caption.bold())
+                    .foregroundStyle(ImperialPalette.imperialGold)
+                Button("全选主力 [~]") {
+                    sceneInstance?.selectAllCombatSquads()
+                    sceneInstance?.focusResponder()
+                }
+                .buttonStyle(ImperialBronzeButtonStyle(isCompact: true))
+
+                if router.launchContext.playerFaction == .wulin {
+                    Button("绊马索") {
+                        sceneInstance?.deployWulinTrap(.tripwire)
+                        sceneInstance?.focusResponder()
+                    }
+                    .buttonStyle(ImperialBronzeButtonStyle(isCompact: true))
+                    Button("尖刺坑") {
+                        sceneInstance?.deployWulinTrap(.spikePit)
+                        sceneInstance?.focusResponder()
+                    }
+                    .buttonStyle(ImperialBronzeButtonStyle(isCompact: true))
+                }
+                if router.launchContext.playerFaction == .shamo {
+                    Toggle("纯金秒募雇佣兵", isOn: $recruitUseShamoMerc)
+                        .toggleStyle(.checkbox)
+                        .font(.caption2)
+                        .foregroundStyle(ImperialPalette.imperialGoldBright)
+                }
+
+                Spacer()
+
+                // 实时训练队列图标条（点击可取消退钱）
+                if !queueItems.isEmpty {
+                    HStack(spacing: 4) {
+                        Text("队列:")
+                            .font(.caption2)
+                            .foregroundStyle(ImperialPalette.parchmentMuted)
+                        ForEach(Array(queueItems.prefix(5).enumerated()), id: \.offset) { idx, item in
+                            let uShort = UnitConfig.stats(for: item.unitType)?.name.prefix(2) ?? "兵"
+                            Button("\(uShort) \(Int(ceil(item.remainingSeconds)))s ×") {
+                                sceneInstance?.cancelQueueItem(at: idx)
+                                sceneInstance?.focusResponder()
+                            }
+                            .buttonStyle(ImperialBronzeButtonStyle(isCompact: true))
+                            .help("点击取消该项招募并全额退还资源")
                         }
                     }
-                    .buttonStyle(.bordered)
                 }
+            }
 
-                Button("鸣金收兵（按当前真实伤亡结算撤退）") {
-                    showEscapeMenu = false
-                    if let cur = sceneInstance?.buildCurrentSettlementSummary() {
-                        let retreatSummary = PostBattleSettlementSummary(
-                            scenarioType: cur.scenarioType,
-                            playerFaction: cur.playerFaction,
-                            enemyFaction: cur.enemyFaction,
-                            isVictory: false,
-                            outcomeReason: .playerArmyRouted,
-                            durationSeconds: cur.durationSeconds,
-                            playerKilled: cur.playerKilled,
-                            playerWoundedRecovered: cur.playerWoundedRecovered,
-                            enemyKilled: cur.enemyKilled,
-                            capturedPrisoners: 0,
-                            lootedGold: 0,
-                            lootedWood: 0,
-                            lootedGrain: 0,
-                            commanderExpGained: max(30, cur.commanderExpGained / 2)
-                        )
-                        router.completeBattleAndShowResult(retreatSummary)
+            // 军团编制横向卡片列
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(squads) { sq in
+                        let isSel = selectedSet.contains(sq.id)
+                        let stars = sq.veterancyStars > 0 ? String(repeating: "★", count: sq.veterancyStars) : ""
+                        Button {
+                            sceneInstance?.selectSingleSquad(sq.id, centerCamera: isSel)
+                            sceneInstance?.focusResponder()
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: UnitVisualSymbol.sfSymbol(for: sq.unitType))
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(ImperialPalette.imperialGoldBright)
+                                    Text("\(stars)\(sq.unitName)")
+                                        .font(.caption2.bold())
+                                        .foregroundStyle(ImperialPalette.parchmentText)
+                                        .lineLimit(1)
+                                    Spacer(minLength: 2)
+                                    Text("\(sq.aliveCount)")
+                                        .font(.caption.monospacedDigit().bold())
+                                        .foregroundStyle(ImperialPalette.imperialGoldBright)
+                                }
+                                HStack(spacing: 4) {
+                                    Text(sq.isRouting ? "溃逃!" : "士\(Int(sq.morale))")
+                                        .foregroundStyle(sq.isRouting ? .red : ImperialPalette.jadeSupply)
+                                    Text("· \(sq.formation.displayName)")
+                                        .foregroundStyle(ImperialPalette.parchmentMuted)
+                                }
+                                .font(.system(size: 9.5))
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .frame(width: 122, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 7)
+                                    .fill(isSel ? ImperialPalette.legionCrimson.opacity(0.36) : ImperialPalette.obsidianElevated)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 7)
+                                    .strokeBorder(isSel ? ImperialPalette.imperialGoldBright : ImperialPalette.bronzeBorder.opacity(0.40), lineWidth: isSel ? 1.5 : 0.9)
+                            )
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
-                .buttonStyle(.bordered)
-
-                Button("兵种克制与键鼠速查 (⌘/)") {
-                    router.showQuickHelpSheet = true
-                }
-                .buttonStyle(.bordered)
-
-                Button("返回上一页（不保存本场临时进度）") {
-                    showEscapeMenu = false
-                    router.goBack()
-                }
-                .buttonStyle(.bordered)
-                .tint(.red)
             }
-            .padding(26)
-            .frame(width: 390)
-            .background(RoundedRectangle(cornerRadius: 12).fill(.regularMaterial))
+
+            // 底部快捷募兵栏（支持 Shift+点击一次连招 5 名！）
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 5) {
+                    ForEach(legalRecruitUnits) { u in
+                        Button {
+                            let batch = NSEvent.modifierFlags.contains(.shift) ? 5 : 1
+                            sceneInstance?.recruitReinforcement(
+                                unitType: u.id,
+                                useMercenaryGold: recruitUseShamoMerc && router.launchContext.playerFaction == .shamo,
+                                batchCount: batch
+                            )
+                            sceneInstance?.focusResponder()
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: UnitVisualSymbol.sfSymbol(for: u.id))
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(u.exclusiveFaction != nil ? ImperialPalette.imperialGoldBright : ImperialPalette.parchmentMuted)
+                                Text("+ \(u.name) (金\(u.cost.gold))")
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .foregroundStyle(u.exclusiveFaction != nil ? ImperialPalette.imperialGoldBright : ImperialPalette.parchmentText)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.42)))
+                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(ImperialPalette.bronzeBorder.opacity(0.45), lineWidth: 0.9))
+                        }
+                        .buttonStyle(.plain)
+                        .help("\(u.name)：\(u.traitDesc)（消耗 金\(u.cost.gold)/木\(u.cost.wood)/粮\(u.cost.grain)，按住 Shift 点击一次连募 5 人！）")
+                    }
+                }
+            }
+        }
+    }
+
+    // 右区：五种古战阵型（含罗马龟甲阵）+ 九大奇正战术指令
+    private var rightFormationsAndTacticsPanel: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("古战阵型 [1~5] 与奇正军令（可按住右键拖拽拉阵线）")
+                    .font(.caption.bold())
+                    .foregroundStyle(ImperialPalette.imperialGold)
+                Spacer()
+                Button("重置镜头") {
+                    sceneInstance?.resetCameraToCenter()
+                    sceneInstance?.focusResponder()
+                }
+                .buttonStyle(ImperialBronzeButtonStyle(isCompact: true))
+            }
+
+            HStack(spacing: 4) {
+                ForEach(FormationType.allCases) { f in
+                    Button("[\(f.shortcutHint)]\(f.displayName)") {
+                        sceneInstance?.applyFormationToSelection(f)
+                        sceneInstance?.focusResponder()
+                    }
+                    .buttonStyle(ImperialBronzeButtonStyle(isHighlighted: f == .testudo, isCompact: true))
+                    .help("\(f.displayName)：\(f.tacticalBrief)")
+                }
+            }
+
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 5), spacing: 4) {
+                ForEach(TacticalOrder.allCases) { order in
+                    Button("[\(order.rtsShortcutKey)]\(order.displayName)") {
+                        sceneInstance?.applyTacticalOrderToSelection(order)
+                        sceneInstance?.focusResponder()
+                    }
+                    .buttonStyle(ImperialBronzeButtonStyle(isCompact: true))
+                }
+            }
+        }
+    }
+
+    // 主帅亲征英雄动作操控台
+    private var heroActionConsolePanel: some View {
+        let p = syncPacket
+        return HStack(spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("⚔️ 主帅亲征随身三兵刃（数字键 1 / 2 / 3 切换）")
+                    .font(.caption.bold())
+                    .foregroundStyle(ImperialPalette.imperialGold)
+                HStack(spacing: 8) {
+                    ForEach(Array(HeroWeaponType.allCases.enumerated()), id: \.element.id) { idx, weapon in
+                        let active = hud.heroActiveWeapon == weapon
+                        Button {
+                            sceneInstance?.switchHeroWeapon(weapon)
+                            sceneInstance?.focusResponder()
+                        } label: {
+                            Text("[\(idx + 1)] \(weapon.displayName)\(weapon == .heavyWarbow ? " (\(hud.heroRemainingArrows)支)" : "")")
+                        }
+                        .buttonStyle(ImperialBronzeButtonStyle(isHighlighted: active))
+                    }
+                }
+                Text("操作：[WASD] 八向走位 · 鼠标瞄准 · 左键挥砍/突刺/0.9s满蓄力贯射 · 右键佩刀举盾（前 0.25s 精准弹反零伤震晕 1.5s！）")
+                    .font(.caption2)
+                    .foregroundStyle(ImperialPalette.parchmentMuted)
+            }
+
+            Divider().frame(height: 110).overlay(ImperialPalette.bronzeBorder.opacity(0.4))
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("🔥 统帅无双战技（主帅已斩敌 \(p?.heroKills ?? 0) 首级）")
+                    .font(.caption.bold())
+                    .foregroundStyle(ImperialPalette.imperialGold)
+                HStack(spacing: 10) {
+                    heroSkillButton(
+                        title: "[Space] 破阵突击",
+                        subtitle: "猛冲撞飞敌阵",
+                        cd: p?.heroBreakthroughCd ?? 0
+                    ) {
+                        sceneInstance?.triggerHeroSkill(.breakthroughCharge)
+                        sceneInstance?.focusResponder()
+                    }
+
+                    heroSkillButton(
+                        title: "[E] 铁壁横戈",
+                        subtitle: "2s弹箭+旋斩",
+                        cd: p?.heroBulwarkCd ?? 0
+                    ) {
+                        sceneInstance?.triggerHeroSkill(.ironBulwark)
+                        sceneInstance?.focusResponder()
+                    }
+
+                    heroSkillButton(
+                        title: "[R] 三军战吼",
+                        subtitle: "+18士气唤醒溃军",
+                        cd: p?.heroWarCryCd ?? 0
+                    ) {
+                        sceneInstance?.triggerHeroSkill(.grandWarCry)
+                        sceneInstance?.focusResponder()
+                    }
+                }
+            }
+
+            Spacer()
+        }
+    }
+
+    private func heroSkillButton(title: String, subtitle: String, cd: Double, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(cd > 0.05 ? "\(title) (\(String(format: "%.1fs", cd)))" : title)
+                    .font(.callout.bold())
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(ImperialPalette.parchmentMuted)
+            }
+        }
+        .buttonStyle(ImperialCrimsonButtonStyle(isCompact: true))
+        .disabled(cd > 0.05)
+    }
+
+    // MARK: - 战场 Esc 军务菜单与胜负横幅浮层
+
+    private var escapeTacticalMenuOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.62)
+                .ignoresSafeArea()
+            ImperialPanel(cornerRadius: 14, borderOpacity: 0.85, padding: 26) {
+                VStack(spacing: 14) {
+                    Text("战场统帅军务大帐")
+                        .font(.title2.bold())
+                        .foregroundStyle(ImperialPalette.imperialGoldBright)
+                    Text("战局已暂停 —— 可随时重返沙场、查阅克制宝典或议和收兵")
+                        .font(.caption)
+                        .foregroundStyle(ImperialPalette.parchmentMuted)
+
+                    Button("▶ 继续指挥作战 (Esc)") {
+                        toggleEscapeMenu()
+                    }
+                    .buttonStyle(ImperialCrimsonButtonStyle())
+
+                    Button("📖 兵种克制与快捷键宝典 (⌘/)") {
+                        router.showQuickHelpSheet = true
+                    }
+                    .buttonStyle(ImperialBronzeButtonStyle())
+
+                    Button("🏳 阵前鸣金休战 · 进入军功结算") {
+                        showEscapeMenu = false
+                        if let summary = sceneInstance?.concludeBattleByTruceAndSummarize() {
+                            router.completeBattleAndShowResult(summary)
+                        }
+                    }
+                    .buttonStyle(ImperialBronzeButtonStyle())
+
+                    Button("‹ 撤回主帅大帐（主菜单）") {
+                        showEscapeMenu = false
+                        router.returnToMainMenu()
+                    }
+                    .buttonStyle(ImperialBronzeButtonStyle())
+                }
+                .frame(width: 340)
+            }
+        }
+    }
+
+    private func battleConcludedOverlay(_ summary: PostBattleSettlementSummary) -> some View {
+        ZStack {
+            Color.black.opacity(0.68)
+                .ignoresSafeArea()
+            ImperialPanel(cornerRadius: 16, borderOpacity: 0.90, padding: 28) {
+                VStack(spacing: 14) {
+                    Image(systemName: summary.isVictory ? "crown.fill" : "shield.slash.fill")
+                        .font(.system(size: 42))
+                        .foregroundStyle(summary.isVictory ? ImperialPalette.imperialGoldBright : .red)
+
+                    Text(summary.isVictory ? "🏆 三军凯旋 · 会战大捷！" : "⚔️ 鸣金收兵 · 战局落幕")
+                        .font(.system(size: 28, weight: .black, design: .serif))
+                        .foregroundStyle(summary.isVictory ? ImperialPalette.imperialGoldBright : .orange)
+
+                    Text("歼敌 \(summary.enemyKilled) · 阵亡 \(summary.playerKilled)（医帐抢救归建 +\(summary.playerWoundedRecovered)）· 生擒战俘 \(summary.capturedPrisoners)")
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(ImperialPalette.parchmentText)
+
+                    Text("缴获军资：黄金 +\(summary.lootedGold)  |  良木 +\(summary.lootedWood)  |  粮草 +\(summary.lootedGrain)")
+                        .font(.callout.bold())
+                        .foregroundStyle(ImperialPalette.imperialGold)
+
+                    Button("检阅军功与处置战俘 ›") {
+                        let finalSum = sceneInstance?.buildCurrentSettlementSummary() ?? summary
+                        router.completeBattleAndShowResult(finalSum)
+                    }
+                    .buttonStyle(ImperialCrimsonButtonStyle())
+                    .padding(.top, 6)
+                }
+                .frame(width: 500)
+            }
         }
     }
 }

@@ -69,21 +69,23 @@ public enum UnitTypeId: String, CaseIterable, Sendable, Codable, Hashable, Ident
 
 // MARK: - 二、编队阵型、战术指令、多军团与骨骼动作枚举
 
-/// 四种经典冷兵器编队阵型（对应 macOS 快捷键 1 / 2 / 3 / 4）
+/// 五种经典冷兵器编队阵型（融合东方古战阵与《罗马帝国》经典龟甲阵，对应快捷键 1 / 2 / 3 / 4 / 5）
 public enum FormationType: String, CaseIterable, Sendable, Codable, Hashable, Identifiable {
     case phalanxRect = "phalanx_rect"   // 方阵（护甲+20%，抗骑击退+50%，移速-15%）
     case echelonLine = "echelon_line"   // 雁行阵（远程齐射100%，受爆炸溅射-35%）
     case wedgeCharge = "wedge_charge"   // 锥形阵（移速+8%，冲锋倍率+25%，近防-10%）
     case circleDefense = "circle_def"   // 圆阵（360°消除侧背弱点，无法高速移动）
+    case testudo = "testudo"            // 龟甲阵（《罗马帝国》重盾覆顶：护甲+35%，正面/顶部远程减伤85%，移速-32%）
 
     public var id: String { rawValue }
 
     public var displayName: String {
         switch self {
-        case .phalanxRect: return "方阵"
-        case .echelonLine: return "雁行阵"
-        case .wedgeCharge: return "锥形阵"
-        case .circleDefense: return "圆阵"
+        case .phalanxRect: return "密集方阵"
+        case .echelonLine: return "雁行散阵"
+        case .wedgeCharge: return "楔形冲阵"
+        case .circleDefense: return "抗骑圆阵"
+        case .testudo: return "罗马龟甲阵"
         }
     }
 
@@ -93,6 +95,17 @@ public enum FormationType: String, CaseIterable, Sendable, Codable, Hashable, Id
         case .echelonLine: return "2"
         case .wedgeCharge: return "3"
         case .circleDefense: return "4"
+        case .testudo: return "5"
+        }
+    }
+
+    public var tacticalBrief: String {
+        switch self {
+        case .phalanxRect: return "护甲 +20% · 正面抗骑停马"
+        case .echelonLine: return "全宽齐射 · 爆炸溅射 -35%"
+        case .wedgeCharge: return "移速 +8% · 冲锋破阵 +25%"
+        case .circleDefense: return "360° 免疫包抄 · 死守阵地"
+        case .testudo: return "护甲 +35% · 箭雨减伤 85%"
         }
     }
 }
@@ -729,6 +742,7 @@ public struct RouteLaunchContext: Sendable, Codable, Hashable {
     public var terrain: TerrainType
     public var weather: WeatherType
     public var targetNodeId: String?
+    public var aiDifficulty: AIDifficultyTier
 
     public init(
         entryMode: GameEntryMode = .skirmish,
@@ -737,7 +751,8 @@ public struct RouteLaunchContext: Sendable, Codable, Hashable {
         scenarioType: BattleScenarioType = .fieldPitched,
         terrain: TerrainType = .plain,
         weather: WeatherType = .clearDay,
-        targetNodeId: String? = nil
+        targetNodeId: String? = nil,
+        aiDifficulty: AIDifficultyTier = .veteran
     ) {
         self.entryMode = entryMode
         self.playerFaction = playerFaction
@@ -746,5 +761,197 @@ public struct RouteLaunchContext: Sendable, Codable, Hashable {
         self.terrain = terrain
         self.weather = weather
         self.targetNodeId = targetNodeId
+        self.aiDifficulty = aiDifficulty
     }
+}
+
+// MARK: - 六、帝国四时代演进、铁匠铺三系锻造、战略赋税诏令与声效信标（指尖帝国 × 罗马帝国核心系统）
+
+/// AI 战术与战略难度档位
+public enum AIDifficultyTier: String, CaseIterable, Sendable, Codable, Hashable, Identifiable {
+    case recruit = "recruit"   // 新锐百夫长（AI 募兵与采矿 0.85x）
+    case veteran = "veteran"   // 宿将统帅（1.00x 公平博弈）
+    case emperor = "emperor"   // 帝国霸主（AI 积极攀升时代、铁匠满锻造、凌厉双翼包抄 1.20x）
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .recruit: return "百夫长（轻松）"
+        case .veteran: return "大将军（标准）"
+        case .emperor: return "帝国霸主（硬核）"
+        }
+    }
+}
+
+/// 战场四阶文明时代演进（致敬《指尖帝国》与《罗马帝国》时代升级核心驱动力）
+public enum ImperialAge: Int, CaseIterable, Sendable, Codable, Hashable, Comparable, Identifiable {
+    case age1Bronze = 1    // 时代 I · 青铜军屯时代（基础民居、农庄、步兵营、靶场）
+    case age2IronCity = 2  // 时代 II · 铁器城邦时代（解锁皇家马厩、铁匠铺、警戒箭塔，全军攻击 +8%，人口上限 +20）
+    case age3Imperial = 3  // 时代 III · 王权帝国时代（解锁攻城器械所、高阶锻造，全军攻击 +16%，人口上限 +45）
+    case age4Hegemon = 4   // 时代 IV · 传世霸业时代（黄金巅峰，全军攻击 +26%、护甲 +5，人口上限 +80）
+
+    public var id: Int { rawValue }
+
+    public static func < (lhs: ImperialAge, rhs: ImperialAge) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+
+    public var romanNumeral: String {
+        switch self {
+        case .age1Bronze: return "I"
+        case .age2IronCity: return "II"
+        case .age3Imperial: return "III"
+        case .age4Hegemon: return "IV"
+        }
+    }
+
+    public var displayName: String {
+        switch self {
+        case .age1Bronze: return "青铜军屯时代"
+        case .age2IronCity: return "铁器城邦时代"
+        case .age3Imperial: return "王权帝国时代"
+        case .age4Hegemon: return "传世霸业时代"
+        }
+    }
+
+    public var nextAge: ImperialAge? {
+        ImperialAge(rawValue: rawValue + 1)
+    }
+
+    /// 演进至本时代所需资源成本
+    public var advanceCost: ResourceCost {
+        switch self {
+        case .age1Bronze: return ResourceCost(gold: 0, wood: 0, grain: 0)
+        case .age2IronCity: return ResourceCost(gold: 160, wood: 110, grain: 140)
+        case .age3Imperial: return ResourceCost(gold: 290, wood: 200, grain: 240)
+        case .age4Hegemon: return ResourceCost(gold: 460, wood: 320, grain: 380)
+        }
+    }
+
+    /// 演进耗时（秒）
+    public var advanceDurationSec: Double {
+        switch self {
+        case .age1Bronze: return 0.0
+        case .age2IronCity: return 15.0
+        case .age3Imperial: return 20.0
+        case .age4Hegemon: return 25.0
+        }
+    }
+
+    public var attackMultiplierBonus: Double {
+        switch self {
+        case .age1Bronze: return 1.00
+        case .age2IronCity: return 1.08
+        case .age3Imperial: return 1.16
+        case .age4Hegemon: return 1.26
+        }
+    }
+
+    public var flatArmorBonus: Double {
+        switch self {
+        case .age1Bronze: return 0.0
+        case .age2IronCity: return 2.0
+        case .age3Imperial: return 4.0
+        case .age4Hegemon: return 7.0
+        }
+    }
+
+    public var popCapBonus: Int {
+        switch self {
+        case .age1Bronze: return 0
+        case .age2IronCity: return 20
+        case .age3Imperial: return 45
+        case .age4Hegemon: return 80
+        }
+    }
+}
+
+/// 军械铁匠铺三系渐进锻造科技（每系 0 -> 3 级，直接增益全场现役与后续招募部队）
+public enum BlacksmithUpgradeTrack: String, CaseIterable, Sendable, Codable, Hashable, Identifiable {
+    case meleeForging = "melee_forging"       // 百炼锋刃：近战与冲锋伤害每级 +12%
+    case armorTempering = "armor_tempering"   // 鱼鳞重甲：全军护甲每级 +6，盾牌挡箭每级 +4%
+    case fletchingcraft = "fletchingcraft"    // 破甲羽箭：远程与器械伤害每级 +12%，射程每级 +18px
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .meleeForging: return "百炼锋刃"
+        case .armorTempering: return "鱼鳞重甲"
+        case .fletchingcraft: return "破甲羽箭"
+        }
+    }
+
+    public var iconSymbol: String {
+        switch self {
+        case .meleeForging: return "flame.fill"
+        case .armorTempering: return "shield.lefthalf.filled"
+        case .fletchingcraft: return "arrow.up.right.circle.fill"
+        }
+    }
+
+    public func cost(forTargetLevel level: Int) -> ResourceCost {
+        let clamped = max(1, min(3, level))
+        switch self {
+        case .meleeForging:
+            return ResourceCost(gold: 75 * clamped, wood: 35 * clamped, grain: 40 * clamped)
+        case .armorTempering:
+            return ResourceCost(gold: 70 * clamped, wood: 45 * clamped, grain: 35 * clamped)
+        case .fletchingcraft:
+            return ResourceCost(gold: 65 * clamped, wood: 60 * clamped, grain: 30 * clamped)
+        }
+    }
+
+    public func summary(atLevel level: Int) -> String {
+        switch self {
+        case .meleeForging:
+            return "近战伤害 +\(level * 12)%"
+        case .armorTempering:
+            return "护甲 +\(level * 6) · 挡箭 +\(level * 4)%"
+        case .fletchingcraft:
+            return "远程伤害 +\(level * 12)% · 射程 +\(level * 18)"
+        }
+    }
+}
+
+/// 战役大地图帝国赋税与民生国策（致敬《罗马全面战争》行省税率调控）
+public enum CampaignTaxPolicy: String, CaseIterable, Sendable, Codable, Hashable, Identifiable {
+    case benevolentLow = "benevolent_low"       // 轻徭薄赋：税金 80%，产粮 +12%，守军士气 +6，每两回合信誉 +1
+    case standardBalanced = "standard_balanced" // 常制赋税：标准 100% 税粮收支
+    case warLevyHigh = "war_levy_high"          // 军国重敛：税金 +32%，每回合驻军与主力士气修正 -5
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .benevolentLow: return "轻徭薄赋"
+        case .standardBalanced: return "常制赋税"
+        case .warLevyHigh: return "军国重敛"
+        }
+    }
+
+    public var effectBrief: String {
+        switch self {
+        case .benevolentLow: return "税金 -20% · 粮产 +12% · 士气 +6"
+        case .standardBalanced: return "税金 100% · 粮产 100% · 民生均衡"
+        case .warLevyHigh: return "税金 +32% · 战前士气 -5"
+        }
+    }
+}
+
+/// 战斗核心向渲染/音频层推送的即时声效信标枚举
+public enum BattleSoundCue: String, CaseIterable, Sendable, Codable, Hashable {
+    case warHorn = "war_horn"               // 出征/冲锋/战吼低沉铜角
+    case drumMarch = "drum_march"           // 阵型切换与行军战鼓
+    case swordClash = "sword_clash"         // 近战刀剑金铁交鸣
+    case parryRing = "parry_ring"           // 0.25s 精准弹反清脆剑鸣
+    case bowVolley = "bow_volley"           // 弓弩齐射弦响
+    case boulderBoom = "boulder_boom"       // 投石巨石与火雷轰鸣
+    case buildHammer = "build_hammer"       // 营建工事木石敲击
+    case forgeClang = "forge_clang"         // 铁匠铺打铁升级清音
+    case ageFanfare = "age_fanfare"         // 时代演进恢弘礼号
+    case victoryFanfare = "victory_fanfare" // 大捷凯旋号角
+    case defeatBell = "defeat_bell"         // 败北沉钟
+    case uiClick = "ui_click"               // 古铜按钮轻击
 }

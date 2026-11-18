@@ -40,57 +40,72 @@ public struct RootContentView: View {
                 SettingsView(router: router)
             }
         }
+        .background(ImperialPalette.obsidianDeep)
+        .onAppear {
+            BattleAudioEngine.shared.masterVolume = Float(router.userSettings.masterVolume * router.userSettings.sfxVolume)
+        }
         .sheet(isPresented: $router.showQuickHelpSheet) {
             QuickTacticalHelpSheet(isPresented: $router.showQuickHelpSheet)
         }
     }
 }
 
-/// 菜单栏【帮助 -> 兵种克制闭环与 Mac 键鼠操作速查 (⌘/)】原生 Sheet 面板
+/// 菜单栏【帮助 -> 兵种克制闭环与 Mac 键鼠操作速查 (⌘/)】帝国军典 Sheet 面板
 private struct QuickTacticalHelpSheet: View {
     @Binding var isPresented: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("冷兵器克制闭环与 macOS 键鼠速查")
+                Image(systemName: "book.closed.fill")
+                    .font(.title2)
+                    .foregroundStyle(ImperialPalette.imperialGoldBright)
+                Text("帝国锋刃 · 兵种克制闭环与键鼠指挥速查")
                     .font(.title2.bold())
+                    .foregroundStyle(ImperialPalette.parchmentText)
                 Spacer()
                 Button("关闭 (Esc)") {
                     isPresented = false
                 }
+                .buttonStyle(ImperialBronzeButtonStyle(isCompact: true))
                 .keyboardShortcut(.cancelAction)
             }
 
             Divider()
 
-            GroupBox("四大闭环克制铁律") {
+            ImperialPanel(padding: 12) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("• 刀盾步兵（55% 正面盾防）顶箭克制 复合弓手 -> 复合弓手 抛射克制无盾 长枪兵 / 巨斧兵 / 狂战士")
-                    Text("• 长枪方阵兵（3.2× 反骑 + 30% 动能破甲停马）正面克制 骑兵 -> 骑兵 高速绕后切碎 弓弩手 / 投石车 / 工兵")
-                    Text("• 重型巨斧兵 / 巨熊破阵者（65%~70% 破甲）横扫克制 重甲刀盾 -> 连弩车 / 神弩手 高破甲点杀 巨人 / 铁浮图")
-                    Text("• 配重投石车 超远砸崩 密集方阵与城墙 -> 游骑兵 / 影袭神射 突入 220px 盲区摧毁 投石车")
+                    Text("一、冷兵器四大克制铁律")
+                        .font(.subheadline.bold())
+                        .foregroundStyle(ImperialPalette.imperialGold)
+                    Text("• 刀盾军团（正面 55% 挡箭，结[5]罗马龟甲阵高达 85% 挡箭！）克制 弓弩齐射 -> 弓弩手 抛射克制无盾 长枪兵 / 巨斧兵")
+                    Text("• 长枪方阵（3.2× 反骑 + 30% 动能破甲停马）正面克制 冲锋骑兵 -> 骑兵 高速迂回切碎 弓弩手 / 投石车 / 民夫")
+                    Text("• 重型巨斧 / 巨熊破阵者（65%~70% 破甲）劈开 重甲盾墙 -> 连弩车 / 影袭神射 高破甲点杀 重装巨人与铁浮图")
+                    Text("• 配重投石车 远程轰塌 城墙箭塔与密集方阵 -> 轻骑兵 / 精锐步兵 突入 220px 最小射程盲区拆毁器械")
                 }
                 .font(.callout)
+                .foregroundStyle(ImperialPalette.parchmentText)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(6)
             }
 
-            GroupBox("macOS 双视角键鼠核心操作") {
+            ImperialPanel(padding: 12) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("• RTS 统帅视角：左键点选/拖拽框选部队，右键移动/攻击，双指滑动或中键平移，⌘+滚轮/双指捏合缩放")
-                    Text("• RTS 编队快捷键：[1~4] 方阵/雁行/锥形/圆阵；[Q/W/E/R/F] 推进/坚守/冲锋/撤退/包抄；[B] 鸣响本阵警钟；[Space] 战术暂停")
-                    Text("• 亲自上阵英雄视角（[Tab] 切换，冷却 1.5s）：[WASD] 移动主帅，鼠标瞄准，左键挥砍/蓄力射箭，右键举盾弹反（0.25s 窗口）")
-                    Text("• 英雄武器与技能：[1/2/3] 统帅佩刀 / 破阵大枪 / 百石硬弓（24 支箭袋上限）；[Space] 破阵突击，[E] 铁壁横戈，[R] 三军战吼")
+                    Text("二、指尖帝国营建 × 罗马拉线布阵 × 双视角无双")
+                        .font(.subheadline.bold())
+                        .foregroundStyle(ImperialPalette.imperialGold)
+                    Text("• 罗马拉线布阵：左键框选军团，按住右键在地面横向拖拽即可自由拉出宽窄战线与迎敌朝向；[1~5] 切换方阵/雁行/锥形/圆阵/龟甲阵")
+                    Text("• 帝国营建与时代演进：建造民居(+16人口)、农庄(+军粮)、兵营/靶场/马厩(加速募兵)、铁匠铺(三系攻防锻造 Lv.1~3)，演进四大文明时代")
+                    Text("• 主帅提刀上阵（[Tab] 切换）：[WASD] 走位，左键挥砍/穿刺/蓄力射箭，右键 0.25s 精准弹反震晕近敌，[R] 战吼唤醒白旗溃兵")
                 }
                 .font(.callout)
+                .foregroundStyle(ImperialPalette.parchmentText)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(6)
             }
 
             Spacer()
         }
         .padding(24)
-        .frame(width: 720, height: 430)
+        .background(ImperialPalette.obsidianDeep)
+        .frame(width: 780, height: 470)
     }
 }

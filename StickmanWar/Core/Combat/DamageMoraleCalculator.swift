@@ -285,10 +285,12 @@ public enum DamageMoraleCalculator: Sendable {
             }
         }
 
-        // 4. 目标护甲修正（阵型 + 势力 + 涉水 + 士气动摇）
+        // 4. 目标护甲修正（阵型 + 罗马龟甲阵 + 势力 + 涉水 + 士气动摇）
         var adjustedArmor = input.targetBaseArmor
         if input.targetFormationBonusActive {
-            if input.targetFormation == .phalanxRect && input.targetEncirclement != .pincered {
+            if input.targetFormation == .testudo && direction != .rear {
+                adjustedArmor *= 1.35
+            } else if input.targetFormation == .phalanxRect && input.targetEncirclement != .pincered {
                 adjustedArmor *= 1.20
             } else if input.targetFormation == .wedgeCharge && input.isMelee {
                 adjustedArmor *= 0.90
@@ -306,15 +308,19 @@ public enum DamageMoraleCalculator: Sendable {
         let effArmor = computeEffectiveArmor(targetArmor: adjustedArmor, armorPenetration: effectivePen)
         let mitigation = computeArmorMitigation(effectiveArmor: effArmor)
 
-        // 5. 远程盾牌格挡与铁鹰换弹背盾机制（背击完全无视盾防；铁鹰神弩手换弹背大盾享 60% 减免）
+        // 5. 远程盾牌格挡、罗马龟甲阵覆顶巨盾与铁鹰换弹背盾机制
         var mShield = 1.0
         var shieldBlocked = false
         if !input.isMelee && !input.isExplosiveArea {
             var blockRate = input.targetShieldRangedBlock * shieldFactor
+            if input.targetFormation == .testudo && input.targetFormationBonusActive && direction != .rear {
+                // 罗马龟甲阵：前排与顶层大盾严密咬合，箭矢与弩矢减伤高达 85%！
+                blockRate = max(blockRate, 0.85)
+            }
             if input.targetIsReloadingBackShield {
                 blockRate = max(blockRate, 0.60)
             }
-            blockRate = min(0.85, max(0.0, blockRate))
+            blockRate = min(0.88, max(0.0, blockRate))
             if blockRate > 0.05 {
                 shieldBlocked = true
             }
@@ -610,6 +616,8 @@ public enum DamageMoraleCalculator: Sendable {
                 speed *= 1.08
             case .circleDefense:
                 speed *= 0.12
+            case .testudo:
+                speed *= 0.68
             }
         }
 
@@ -698,13 +706,16 @@ public enum DamageMoraleCalculator: Sendable {
         slotIndex: Int,
         totalSlots: Int,
         formation: FormationType,
-        spacing: Double = 20.0
+        spacing: Double = 20.0,
+        lineSpreadMultiplier: Double = 1.0
     ) -> (forwardX: Double, lateralY: Double) {
         let count = max(1, totalSlots)
+        let clampedSpread = max(0.55, min(2.2, lineSpreadMultiplier))
         switch formation {
         case .phalanxRect:
-            // 密集矩形（深 4~6 排）
-            let cols = max(3, min(10, Int(ceil(sqrt(Double(count) * 1.6)))))
+            // 密集矩形（支持右键拉宽或收窄纵深）
+            let baseCols = Double(max(3, min(12, Int(ceil(sqrt(Double(count) * 1.6))))))
+            let cols = max(2, min(count, Int((baseCols * clampedSpread).rounded())))
             let rank = slotIndex / cols
             let file = slotIndex % cols
             let totalRanks = Int(ceil(Double(count) / Double(cols)))
@@ -712,9 +723,20 @@ public enum DamageMoraleCalculator: Sendable {
             let lateral = (Double(file) - Double(cols - 1) * 0.5) * (spacing * 0.90)
             return (forward, lateral)
 
+        case .testudo:
+            // 罗马龟甲重盾阵：肩并肩严丝合缝紧凑重盾方匣
+            let baseCols = Double(max(3, min(8, Int(ceil(sqrt(Double(count) * 1.25))))))
+            let cols = max(2, min(count, Int((baseCols * clampedSpread).rounded())))
+            let rank = slotIndex / cols
+            let file = slotIndex % cols
+            let totalRanks = Int(ceil(Double(count) / Double(cols)))
+            let forward = (Double(totalRanks - 1) * 0.5 - Double(rank)) * (spacing * 0.72)
+            let lateral = (Double(file) - Double(cols - 1) * 0.5) * (spacing * 0.72)
+            return (forward, lateral)
+
         case .echelonLine:
             // 宽幅双排微弧线展开，无后排遮挡
-            let cols = max(4, Int(ceil(Double(count) / 2.0)))
+            let cols = max(3, min(count, Int((ceil(Double(count) / 2.0) * clampedSpread).rounded())))
             let rank = slotIndex / cols
             let file = slotIndex % cols
             let normLateral = cols > 1 ? (Double(file) - Double(cols - 1) * 0.5) : 0.0

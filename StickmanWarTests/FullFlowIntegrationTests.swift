@@ -80,7 +80,7 @@ final class FullFlowIntegrationTests: XCTestCase {
         XCTAssertEqual(router.campaignEngine.controlledNodes(of: .yanlong).count, 5)
 
         // 2. 外交测试：与沙漠商盟馈赠结好并签署丝路通商协定
-        XCTAssertTrue(router.campaignEngine.sendDiplomaticGift(from: .yanlong, to: .shamo, gold: 150, grain: 0).succeeded)
+        XCTAssertTrue(router.campaignEngine.sendDiplomaticGift(from: .yanlong, to: .shamo, gold: 300, grain: 0).succeeded)
         XCTAssertTrue(router.campaignEngine.signTradePact(proposer: .yanlong, target: .shamo).succeeded)
 
         // 3. 将主力移防至赤壁雄关（yl_pass），向相邻苍狼饮马河营（cl_river）发起进军

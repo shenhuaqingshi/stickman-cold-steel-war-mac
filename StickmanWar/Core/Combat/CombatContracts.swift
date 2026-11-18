@@ -44,6 +44,15 @@ public struct BattleHudSnapshot: Sendable, Equatable {
     public let heroActiveWeapon: HeroWeaponType
     public let heroRemainingArrows: Int
     public let outcome: BattleOutcomeReason
+    public let currentAge: ImperialAge
+    public let advancingToAge: ImperialAge?
+    public let ageAdvanceProgress: Double
+    public let enemyCurrentAge: ImperialAge
+    public let meleeForgeLevel: Int
+    public let armorTemperLevel: Int
+    public let fletchingLevel: Int
+    public let idleSapperCount: Int
+    public let activeBuildingCount: Int
 
     public init(
         elapsedSeconds: Double = 0.0,
@@ -65,7 +74,16 @@ public struct BattleHudSnapshot: Sendable, Equatable {
         heroVitalState: HeroVitalState = .healthyActive,
         heroActiveWeapon: HeroWeaponType = .commandSaber,
         heroRemainingArrows: Int = GameConstants.heroWarbowQuiverCap,
-        outcome: BattleOutcomeReason = .ongoing
+        outcome: BattleOutcomeReason = .ongoing,
+        currentAge: ImperialAge = .age1Bronze,
+        advancingToAge: ImperialAge? = nil,
+        ageAdvanceProgress: Double = 0.0,
+        enemyCurrentAge: ImperialAge = .age1Bronze,
+        meleeForgeLevel: Int = 0,
+        armorTemperLevel: Int = 0,
+        fletchingLevel: Int = 0,
+        idleSapperCount: Int = 0,
+        activeBuildingCount: Int = 1
     ) {
         self.elapsedSeconds = elapsedSeconds
         self.isPaused = isPaused
@@ -87,10 +105,19 @@ public struct BattleHudSnapshot: Sendable, Equatable {
         self.heroActiveWeapon = heroActiveWeapon
         self.heroRemainingArrows = heroRemainingArrows
         self.outcome = outcome
+        self.currentAge = currentAge
+        self.advancingToAge = advancingToAge
+        self.ageAdvanceProgress = ageAdvanceProgress
+        self.enemyCurrentAge = enemyCurrentAge
+        self.meleeForgeLevel = meleeForgeLevel
+        self.armorTemperLevel = armorTemperLevel
+        self.fletchingLevel = fletchingLevel
+        self.idleSapperCount = idleSapperCount
+        self.activeBuildingCount = activeBuildingCount
     }
 }
 
-/// 玩家在 macOS 键鼠下发出的 RTS 战术编队调度请求（支持战术暂停期间预下达）
+/// 玩家在 macOS 键鼠下发出的 RTS 战术编队调度请求（支持战术暂停期间预下达与《罗马全面战争》右键拖拽拉阵线）
 public struct SquadCommandRequest: Sendable, Equatable {
     public let squadIds: [Int]
     public let formation: FormationType?
@@ -98,6 +125,8 @@ public struct SquadCommandRequest: Sendable, Equatable {
     public let targetWorldX: Double?
     public let targetWorldY: Double?
     public let appendWaypoint: Bool
+    public let explicitFacingRadians: Double?
+    public let lineSpreadMultiplier: Double?
 
     public init(
         squadIds: [Int],
@@ -105,7 +134,9 @@ public struct SquadCommandRequest: Sendable, Equatable {
         order: TacticalOrder? = nil,
         targetWorldX: Double? = nil,
         targetWorldY: Double? = nil,
-        appendWaypoint: Bool = false
+        appendWaypoint: Bool = false,
+        explicitFacingRadians: Double? = nil,
+        lineSpreadMultiplier: Double? = nil
     ) {
         self.squadIds = squadIds
         self.formation = formation
@@ -113,6 +144,8 @@ public struct SquadCommandRequest: Sendable, Equatable {
         self.targetWorldX = targetWorldX
         self.targetWorldY = targetWorldY
         self.appendWaypoint = appendWaypoint
+        self.explicitFacingRadians = explicitFacingRadians
+        self.lineSpreadMultiplier = lineSpreadMultiplier
     }
 }
 
